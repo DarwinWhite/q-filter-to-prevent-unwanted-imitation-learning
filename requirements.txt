@@ -1,0 +1,26 @@
+# Core ML and RL dependencies
+numpy==1.21.0
+
+# TensorFlow: Use specific versions based on Python version
+tensorflow==1.15.0; python_version<="3.7"
+tensorflow==2.13.1; python_version>="3.8"
+
+# PyTorch for demo generation scripts
+torch==1.12.1
+
+# Gym and environments
+gym==0.26.2
+
+# Visualization and plotting
+matplotlib==3.5.3
+seaborn==0.11.2
+
+# Utilities
+click==8.1.3
+glob2==0.7
+
+# OpenAI Baselines (install manually with specific commit)
+# pip install git+https://github.com/openai/baselines.git@a6b1bc70f156dc45c0da49be8e80941a88021700
+
+# Note: mujoco-py and mpi4py are skipped in favor of modern alternatives
+# These are automatically installed as dependencies of OpenAI Baselines when needed
