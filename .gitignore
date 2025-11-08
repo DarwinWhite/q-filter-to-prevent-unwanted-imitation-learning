@@ -1,6 +1,5 @@
 *.swp
 *.pyc
-*.pkl
 *.py~
 *.pyc
 
@@ -33,7 +32,6 @@ ghostdriver.log
 htmlcov
 
 junk
-src
 
 *.egg-info
 .cache
