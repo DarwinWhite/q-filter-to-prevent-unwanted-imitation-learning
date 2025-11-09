@@ -41,6 +41,16 @@ def train(policy, rollout_worker, evaluator,
     periodic_policy_path = os.path.join(logger.get_dir(), 'policy_{}.pkl')
 
     logger.info("Training MuJoCo DDPG...")
+    if rank == 0:
+        print("\nStarting DDPG Training on MuJoCo")
+        print("Training Configuration:")
+        print("   - Epochs: {}".format(n_epochs))
+        print("   - Cycles per epoch: {}".format(n_cycles))
+        print("   - Training batches per cycle: {}".format(n_batches))
+        print("   - Test rollouts: {}".format(n_test_rollouts))
+        print("   - Environment: {}".format(kwargs.get('env_name', 'Unknown')))
+        print("")
+        
     best_return = -np.inf  # Track best episode return instead of success rate
     best_return_epoch = 0
 
@@ -48,19 +58,35 @@ def train(policy, rollout_worker, evaluator,
         policy.initDemoBuffer(demo_file)  # Initialize demo buffer if provided
         
     for epoch in range(n_epochs):
+        epoch_start = time.time()
+        if rank == 0:
+            print(f"\n=== EPOCH {epoch+1}/{n_epochs} ===")
+            
         # train
         rollout_worker.clear_history()
-        for _ in range(n_cycles):
+        for cycle in range(n_cycles):
             episode = rollout_worker.generate_rollouts()
+            
+            # Get episode return from episode data directly
+            episode_return = episode['r'].sum() if isinstance(episode['r'], list) else episode['r'].mean()
+            
+            if rank == 0:
+                print(f"  Cycle {cycle+1}/{n_cycles} - Episode return: {episode_return:.2f}")
+                
             policy.store_episode(episode)
-            for _ in range(n_batches):
+            
+            for batch in range(n_batches):
                 policy.train()
+            
+            policy.update_target_net()
             policy.update_target_net()
 
         # test
+        if rank == 0:
+            print(f"  Testing policy with {n_test_rollouts} rollouts...")
         logger.info("Testing")
         evaluator.clear_history()
-        for _ in range(n_test_rollouts):
+        for test_episode in range(n_test_rollouts):
             evaluator.generate_rollouts()
 
         # record logs
@@ -74,6 +100,16 @@ def train(policy, rollout_worker, evaluator,
             logger.record_tabular(key, mpi_average(val))
 
         if rank == 0:
+            # Print epoch summary
+            test_return = mpi_average(evaluator.current_success_rate())
+            train_return = mpi_average(rollout_worker.current_success_rate())
+            buffer_size = policy.get_current_buffer_size()
+            print(f"  Epoch {epoch+1} Summary:")
+            print(f"    Test Return: {test_return:.2f}")
+            print(f"    Train Return: {train_return:.2f}")
+            print(f"    Buffer Size: {buffer_size}")
+            print(f"    Best Return So Far: {best_return:.2f} (Epoch {best_return_epoch+1})")
+            
             logger.dump_tabular()
 
         # save the policy if it's better than the previous ones
@@ -91,8 +127,20 @@ def train(policy, rollout_worker, evaluator,
             evaluator.save_policy(policy_path)
 
         # make sure that different threads have different seeds
+        if rank == 0:
+            print(f"✨ Best episode return so far: {best_return:.2f} (achieved in epoch {best_return_epoch+1})")
         logger.info("Best episode return so far ", best_return, " In epoch number ", best_return_epoch)
         local_uniform = np.random.uniform(size=(1,))
+        
+    # Final training summary
+    if rank == 0:
+        print(f"\n🎉 Training Completed!")
+        print(f"📈 Final Results:")
+        print(f"   • Total epochs completed: {n_epochs}")
+        print(f"   • Best episode return: {best_return:.2f}")
+        print(f"   • Best epoch: {best_return_epoch+1}")
+        print(f"   • Final buffer size: {policy.get_current_buffer_size()}")
+        print(f"")
         root_uniform = local_uniform.copy()
         MPI.COMM_WORLD.Bcast(root_uniform, root=0)
         if rank != 0:

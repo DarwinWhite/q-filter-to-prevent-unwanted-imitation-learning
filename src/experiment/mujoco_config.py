@@ -73,9 +73,9 @@ DEFAULT_MUJOCO_PARAMS = {
     # normalization
     'norm_eps': 0.01,  # epsilon used for observation normalization
     'norm_clip': 5,  # normalized observations are cropped to this values
-    'bc_loss': 1,  # whether or not to use the behavior cloning loss as auxiliary loss
-    'q_filter': 1,  # whether or not a Q value filter should be used on the Actor outputs
-    'num_demo': 100  # number of expert demo episodes
+    'bc_loss': 0,  # disabled for basic MuJoCo training (enable with demo data)
+    'q_filter': 0,  # disabled for basic MuJoCo training (enable with demo data)
+    'num_demo': 0  # no demos for basic MuJoCo training
 }
 
 CACHED_MUJOCO_ENVS = {}
@@ -157,6 +157,7 @@ def configure_mujoco_dims(params):
         'o': obs.shape[0],  # observation dimension (e.g., 17 for HalfCheetah-v4)
         'u': env.action_space.shape[0],  # action dimension (e.g., 6 for HalfCheetah-v4)
         'g': 0,  # No goals in MuJoCo - set to 0
+        'r': 1,  # Reward dimension (scalar reward)
     }
     
     # Note: No info handling needed for basic MuJoCo environments
@@ -186,6 +187,9 @@ def simple_mujoco_sample_transitions(episode_batch, batch_size_in_transitions):
         elif key in ['u', 'r', 'g']:
             # Actions, rewards, and goals have T timesteps (not T+1)
             transitions[key] = episode_batch[key].reshape(-1, *episode_batch[key].shape[2:])
+        elif key in ['o_2', 'ag_2']:
+            # Skip these - they're created by the replay buffer
+            pass
     
     return transitions
 

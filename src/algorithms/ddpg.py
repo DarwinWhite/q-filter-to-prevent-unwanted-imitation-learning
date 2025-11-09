@@ -77,7 +77,7 @@ class DDPG(object):
             stage_shapes[key] = (None, *input_shapes[key])
         for key in ['o', 'g']:
             stage_shapes[key + '_2'] = stage_shapes[key]
-        stage_shapes['r'] = (None,)
+        stage_shapes['r'] = (None, self.input_dims['r'])
         self.stage_shapes = stage_shapes
 
         # Create network.

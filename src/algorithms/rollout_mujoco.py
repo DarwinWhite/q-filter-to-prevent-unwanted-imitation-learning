@@ -112,7 +112,7 @@ class RolloutWorkerMuJoCo:
                 u = u.reshape(1, -1)
 
             o_new = np.empty((self.rollout_batch_size, self.dims['o']))
-            rewards_step = np.zeros(self.rollout_batch_size)
+            rewards_step = np.zeros((self.rollout_batch_size, 1))  # 2D to match dims['r']=1
             
             # compute new states and observations
             for i in range(self.rollout_batch_size):
@@ -126,7 +126,7 @@ class RolloutWorkerMuJoCo:
                         curr_o_new, reward, done, info = step_result
                         
                     o_new[i] = curr_o_new  # Direct assignment for flat state
-                    rewards_step[i] = reward
+                    rewards_step[i, 0] = reward  # Store in 2D format for buffer compatibility
                     episode_returns[i] += reward
                     
                     if self.render:
