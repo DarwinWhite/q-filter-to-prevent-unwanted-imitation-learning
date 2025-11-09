@@ -7,58 +7,30 @@ Run the automated setup script:
 ./setup_env.sh
 ```
 
-This will create a virtual environment called `env` and install all dependencies.
+This will:
+- Install Python 3.7.17 via pyenv (required for TensorFlow 1.x)
+- Create a virtual environment with original dependencies
+- Install TensorFlow 1.15.0, OpenAI Baselines, and all compatible packages
 
-## Manual Setup (Alternative)
+## Current Environment Configuration
 
-If you prefer to set up manually:
+### Core Dependencies
+- **Python**: 3.7.17 (via pyenv)
+- **TensorFlow**: 1.15.0 (original version)
+- **MuJoCo**: 2.2.0 (modern version, backward compatible)
+- **OpenAI Baselines**: Original commit (a6b1bc70...)
+- **Gym**: 0.26.2 (working with deprecation warnings)
 
-### 1. Create Virtual Environment
-```bash
-python3 -m venv env
-source env/bin/activate
+### Key Packages
 ```
-
-### 2. Upgrade pip
-```bash
-pip install --upgrade pip
+numpy==1.18.5              # TensorFlow 1.x compatible
+tensorflow==1.15.0         # Original version  
+protobuf==3.20.3           # Compatibility fix
+mujoco==2.2                # Modern MuJoCo
+gym==0.26.2               # Gym with MuJoCo support
+matplotlib==3.5.3          # Plotting
+mpi4py==4.0.3             # Distributed computing
 ```
-
-### 3. Install Dependencies (in order)
-
-#### Core Dependencies
-```bash
-# NumPy (specific version for TensorFlow compatibility)
-pip install numpy==1.21.0
-
-# TensorFlow (version depends on Python version)
-# For Python 3.8+: Use TensorFlow 2.x with v1 compatibility
-pip install tensorflow==2.13.1
-
-# PyTorch for demo generation scripts
-pip install torch==1.12.1 --index-url https://download.pytorch.org/whl/cpu
-```
-
-#### Gym and MuJoCo
-```bash
-# Gym (modern version)
-pip install gym==0.26.2
-```
-
-#### Other Requirements
-```bash
-# Visualization and utilities
-pip install matplotlib==3.5.3
-pip install seaborn==0.11.2
-pip install click==8.1.3
-pip install glob2==0.7
-
-# OpenAI Baselines (specific commit - this also installs modern mujoco package)
-pip install git+https://github.com/openai/baselines.git@a6b1bc70f156dc45c0da49be8e80941a88021700
-```
-
-### 4. Install TensorFlow Compatibility Helper
-The setup script automatically creates `src/utils/tf_compat.py` for TensorFlow 1.x/2.x compatibility.
 
 ## Using the Environment
 
@@ -69,8 +41,8 @@ source env/bin/activate
 
 ### Test Setup
 ```bash
-python test/test_env_status.py          # Quick status check  
-python test/test_policy_loading.py # Detailed validation
+python test/test_env_status.py          # Quick status check
+python test/test_policy_loading.py      # Detailed validation
 ```
 
 ### Deactivate
@@ -78,71 +50,116 @@ python test/test_policy_loading.py # Detailed validation
 deactivate
 ```
 
-## Environment Status
+## Validation Results
+
+All critical components tested and working:
+
+1. **TensorFlow 1.x**: Session-based API works correctly
+2. **MuJoCo Environment**: HalfCheetah-v4 loads and runs (17D obs, 6D actions)
+3. **OpenAI Baselines**: HER module imports successfully
+4. **Episode Test**: Random policy completes 100 steps successfully
+
+## Manual Setup (Alternative)
+
+If you prefer to set up manually:
+
+### 1. Install Python 3.7
+```bash
+# Install pyenv if not available
+curl https://pyenv.run | bash
+
+# Install Python 3.7.17
+pyenv install 3.7.17
+pyenv local 3.7.17
+```
+
+### 2. Create Virtual Environment
+```bash
+python -m venv env
+source env/bin/activate
+pip install --upgrade pip
+```
+
+### 3. Install Dependencies (in order)
+```bash
+# Core dependencies
+pip install numpy==1.18.5
+pip install tensorflow==1.15.0
+pip install protobuf==3.20.3
+
+# OpenAI Baselines (includes MuJoCo, Gym, etc.)
+pip install git+https://github.com/openai/baselines.git@a6b1bc70f156dc45c0da49be8e80941a88021700
+
+# Visualization libraries
+pip install matplotlib==3.5.3 seaborn==0.12.2
+```
+
+## Supported Environments
 
 ### Working Environment Versions
 - **HalfCheetah-v4**: obs_dim=17, action_dim=6
-- **Hopper-v4**: obs_dim=11, action_dim=3
+- **Hopper-v4**: obs_dim=11, action_dim=3  
 - **Walker2d-v4**: obs_dim=17, action_dim=6
-
-### Generated Helper Scripts
-1. **`src/utils/tf_compat.py`**: TensorFlow compatibility layer for TF 1.x code on TF 2.x
-2. **`test/test_policy_loading.py`**: Validates policy loading and environment compatibility
-3. **`src/utils/generate_demos.py`**: Converts .pkl policy files to .npz demonstration trajectories
-4. **`test/test_env_status.py`**: Quick environment status check
 
 ## Important Notes
 
-### Dependencies Intentionally Skipped
-- **mujoco-py**: Requires separate MuJoCo 2.1.0 system installation. We use the modern `mujoco` package instead.
-- **mpi4py**: Requires system MPI libraries. Only needed for distributed training, which is optional.
+### Why Python 3.7 + TensorFlow 1.x?
+- **Maximum Compatibility**: Original Q-filter codebase uses TF 1.x APIs
+- **Reliable Reproduction**: Same dependency stack as original research
+- **Easier Debugging**: Original session-based TensorFlow APIs work as expected
+- **Better Stability**: Well-tested dependency combinations
 
-### TensorFlow Compatibility
-- This project was originally written for TensorFlow 1.x
-- For Python 3.8+, we use TensorFlow 2.x with v1 compatibility mode
-- The `tf_compat.py` file handles this automatically
+### Expected Warnings
+- Gym deprecation warnings - expected and doesn't affect functionality
+- CUDA/NUMA warnings - expected for CPU-only TensorFlow setup
 
-### Key Compatibility Issues Resolved
-1. **TensorFlow Version**: Use TF 2.x with v1 compatibility mode for Python 3.8+
-2. **MuJoCo Installation**: Use modern `mujoco` package instead of legacy `mujoco-py`
-3. **Gym API**: Handle both old and new gym `reset()` and `step()` return signatures
-4. **Dependency Conflicts**: Skip problematic system-dependent packages
+### Dependencies Intentionally Updated
+- **MuJoCo**: Using modern `mujoco==2.2` instead of legacy `mujoco-py`
+- **Protobuf**: Downgraded to 3.20.3 for TensorFlow 1.x compatibility
+- **NumPy**: Using 1.18.5 for TensorFlow 1.x compatibility
 
 ## Troubleshooting
 
 ### TensorFlow Issues
-- If you get warnings about deprecated features, that's expected for this older codebase
-- The compatibility layer in `src/utils/tf_compat.py` handles TF 1.x/2.x differences
+If you encounter TensorFlow import errors, ensure protobuf version is correct:
+```bash
+pip install protobuf==3.20.3
+```
 
 ### OpenAI Baselines Issues
 - The specific commit is required for compatibility
-- If installation fails, ensure all previous dependencies are installed first
+- Ensure system dependencies are installed (handled by `setup_env.sh`)
 
 ### Missing System Dependencies
-If you encounter issues, you may need:
+If manual setup fails, install build dependencies:
 ```bash
-sudo apt-get update
-sudo apt-get install build-essential python3-dev
-```
-
-## Alternative: Using Python 3.7
-For exact compatibility with the original codebase, you can use Python 3.7:
-```bash
-# Install Python 3.7 if not available
-sudo apt-get install python3.7 python3.7-venv
-
-# Create environment with Python 3.7
-python3.7 -m venv env
-source env/bin/activate
-pip install --upgrade pip
-pip install numpy==1.21.0
-pip install tensorflow==1.15.0  # Original TF 1.x works with Python 3.7
-# ... continue with other dependencies
+sudo apt update
+sudo apt install -y make build-essential libssl-dev zlib1g-dev libbz2-dev \
+    libreadline-dev libsqlite3-dev wget curl llvm libncurses5-dev \
+    libncursesw5-dev xz-utils tk-dev libffi-dev liblzma-dev git
 ```
 
 ## Next Steps
 
-1. **Generate Demonstration Data**: Run `python src/utils/generate_demos.py` to create demo files
-2. **Adapt Experiment Code**: Modify `src/experiment/config.py` to use MuJoCo environments  
-3. **Test Q-Filter**: Run baseline experiments comparing DDPG vs DDPG+demos vs DDPG+demos+Q-filter
-4. **Research Extension**: Evaluate Q-filter effectiveness in dense reward settings
+**Environment Ready** - Proceed with Phase 1: MuJoCo environment adaptation
+
+1. Adapt original Q-filter code to work with MuJoCo environments
+2. Modify goal-conditioned structure to flat state observations  
+3. Update training scripts for dense reward settings
+4. Test DDPG training on HalfCheetah-v4
+
+## Quick Commands Reference
+
+```bash
+# Setup (first time)
+./setup_env.sh
+
+# Activate environment
+source env/bin/activate
+
+# Test environment
+python test/test_env_status.py
+
+# Start Q-filter research
+# Ready for Phase 1 implementation!
+```

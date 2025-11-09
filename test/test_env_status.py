@@ -9,25 +9,14 @@ def check_environment():
     
     # Check Python
     import sys
-    print(f"✓ Python: {sys.version.split()[0]}")
+    print(f"Python: {sys.version.split()[0]}")
     
     # Check TensorFlow
     try:
-        import sys
-        import os
-        sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src', 'utils'))
-        import tf_compat  # Our compatibility layer
         import tensorflow as tf
-        print(f"TensorFlow: {tf.__version__} (v1 compatibility mode)")
+        print(f"TensorFlow: {tf.__version__} (TF 1.x)")
     except ImportError as e:
         print(f"TensorFlow: {e}")
-    
-    # Check PyTorch
-    try:
-        import torch
-        print(f"PyTorch: {torch.__version__}")
-    except ImportError as e:
-        print(f"PyTorch: {e}")
     
     # Check MuJoCo
     try:
