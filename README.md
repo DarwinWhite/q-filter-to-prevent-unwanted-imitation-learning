@@ -1,8 +1,41 @@
-# Overcoming-exploration-from-demos
-Implementation of the paper "Overcoming Exploration in Reinforcement Learning with Demonstrations" Nair et al. over the HER baselines from OpenAI
+# Q-Filter to Prevent Unwanted Imitation Learning - MuJoCo Implementation
 
+## Quick Start
 
-> Note: This repository is a modification of her baselines from OpenAI
+### Environment Setup
+```bash
+# Use existing setup from SETUP.md
+source setup_env.sh  # Python 3.7.17 + TensorFlow 1.15.0 + MuJoCo 2.2.0
+```
+
+### Run MuJoCo Training
+```bash
+cd src/experiment
+python train_mujoco.py --env HalfCheetah-v4 --n_epochs 200
+```
+
+### Test Integration
+```bash
+python test/test_mujoco_integration.py  # All 7 test suites should pass
+```
+
+## Implementation Details
+
+### Architecture
+The adaptation uses a **wrapper pattern** to bridge goal-conditioned and flat state environments:
+- **Original DDPG**: Expects `obs['observation']`, `obs['achieved_goal']`, `obs['desired_goal']`
+- **MuJoCo Reality**: Returns flat state observations directly
+- **Our Solution**: Create dummy goals for compatibility while preserving all original functionality
+
+## Documentation
+
+- **[SETUP.md](SETUP.md)**: Environment setup instructions
+- **[PROJECT_STATUS.md](PROJECT_STATUS.md)**: Complete Phase 1 documentation and project status
+- **[Original README sections below]**: Background on DDPG, HER, and demonstrations
+
+---
+
+# Original Implementation Background
 
 There is a vast body of recent research that improves different aspects of RL, and **learning from demonstrations** has been catching attention in terms of its usage to improve exploration which helps the agent to quickly move to important parts of the state space which is usually large and continuous in most robotics problems. Hindsight Experience Replay (or HER for short), is a technique used with reinforcement learning algorithms that can help learn from failure, and I highly recommend to read this [paper](https://arxiv.org/abs/1707.01495) before moving ahead with this blog. Also this blog assumes basic understading in Reinforcement learning (off-policy RL algorithms like DQN and DDPG) and Deep Neural Networks.
 

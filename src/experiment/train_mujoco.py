@@ -7,13 +7,17 @@ import json
 from mpi4py import MPI
 import resource
 
+# Add path for baselines
 sys.path.append('/home/rjangir/software/workSpace/Overcoming-exploration-from-demos/')
+# Add project root for src imports
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from baselines import logger
 from baselines.common import set_global_seeds
 from baselines.common.mpi_moments import mpi_moments
-import config
-from rollout import RolloutWorker, RolloutWorkerOriginal
+import src.experiment.mujoco_config as config  # Use MuJoCo-specific config
+from src.algorithms.rollout_mujoco import RolloutWorkerMuJoCo  # Use MuJoCo-specific rollout worker
+from src.algorithms.ddpg_mujoco import DDPGMuJoCo  # Use MuJoCo-specific DDPG
 from src.utils.util import mpi_fork
 
 from subprocess import CalledProcessError
@@ -36,11 +40,13 @@ def train(policy, rollout_worker, evaluator,
     best_policy_path = os.path.join(logger.get_dir(), 'policy_best.pkl')
     periodic_policy_path = os.path.join(logger.get_dir(), 'policy_{}.pkl')
 
-    logger.info("Training...")
-    best_success_rate = -1
-    best_success_epoch = 0
+    logger.info("Training MuJoCo DDPG...")
+    best_return = -np.inf  # Track best episode return instead of success rate
+    best_return_epoch = 0
 
-    if policy.bc_loss == 1: policy.initDemoBuffer(demo_file) #initializwe demo buffer
+    if policy.bc_loss == 1 and demo_file: 
+        policy.initDemoBuffer(demo_file)  # Initialize demo buffer if provided
+        
     for epoch in range(n_epochs):
         # train
         rollout_worker.clear_history()
@@ -60,7 +66,6 @@ def train(policy, rollout_worker, evaluator,
         # record logs
         logger.record_tabular('epoch', epoch)
         
-
         for key, val in evaluator.logs('test'):
             logger.record_tabular(key, mpi_average(val))
         for key, val in rollout_worker.logs('train'):
@@ -71,13 +76,13 @@ def train(policy, rollout_worker, evaluator,
         if rank == 0:
             logger.dump_tabular()
 
-
         # save the policy if it's better than the previous ones
-        success_rate = mpi_average(evaluator.current_success_rate())
-        if rank == 0 and success_rate >= best_success_rate and save_policies:
-            best_success_rate = success_rate
-            best_success_epoch = epoch
-            logger.info('New best success rate: {}. Saving policy to {} ...'.format(best_success_rate, best_policy_path))
+        # For MuJoCo, we use episode return instead of success rate
+        episode_return = mpi_average(evaluator.current_success_rate())  # This returns mean episode return for MuJoCo
+        if rank == 0 and episode_return >= best_return and save_policies:
+            best_return = episode_return
+            best_return_epoch = epoch
+            logger.info('New best episode return: {}. Saving policy to {} ...'.format(best_return, best_policy_path))
             evaluator.save_policy(best_policy_path)
             evaluator.save_policy(latest_policy_path)
         if rank == 0 and policy_save_interval > 0 and epoch % policy_save_interval == 0 and save_policies:
@@ -86,7 +91,7 @@ def train(policy, rollout_worker, evaluator,
             evaluator.save_policy(policy_path)
 
         # make sure that different threads have different seeds
-        logger.info("Best success rate so far ", best_success_rate, " In epoch number ", best_success_epoch)
+        logger.info("Best episode return so far ", best_return, " In epoch number ", best_return_epoch)
         local_uniform = np.random.uniform(size=(1,))
         root_uniform = local_uniform.copy()
         MPI.COMM_WORLD.Bcast(root_uniform, root=0)
@@ -127,114 +132,74 @@ def launch(
     set_global_seeds(rank_seed)
     resource.setrlimit(resource.RLIMIT_NOFILE, (65536, 65536))
 
-    # Prepare params.
-    params = config.DEFAULT_PARAMS
+    # Prepare params for MuJoCo
+    params = config.DEFAULT_MUJOCO_PARAMS.copy()
     params['env_name'] = env
     params['replay_strategy'] = replay_strategy
-    if env in config.DEFAULT_ENV_PARAMS:
-        params.update(config.DEFAULT_ENV_PARAMS[env])  # merge env-specific parameters in
+    if env in config.DEFAULT_MUJOCO_ENV_PARAMS:
+        params.update(config.DEFAULT_MUJOCO_ENV_PARAMS[env])  # merge env-specific parameters
     params.update(**override_params)  # makes it possible to override any parameter
+    
     with open(os.path.join(logger.get_dir(), 'params.json'), 'w') as f:
         json.dump(params, f)
-    params = config.prepare_params(params)
-    config.log_params(params, logger=logger)
+    params = config.prepare_mujoco_params(params)
+    config.log_mujoco_params(params, logger=logger)
 
     if num_cpu == 1:
         logger.warn()
         logger.warn('*** Warning ***')
         logger.warn(
-            'You are running HER with just a single MPI worker. This will work, but the ' +
-            'experiments that we report in Plappert et al. (2018, https://arxiv.org/abs/1802.09464) ' +
-            'were obtained with --num_cpu 19. This makes a significant difference and if you ' +
-            'are looking to reproduce those results, be aware of this. Please also refer to ' +
-            'https://github.com/openai/baselines/issues/314 for further details.')
+            'You are running DDPG on MuJoCo with just a single MPI worker. ' +
+            'For better performance, consider using --num_cpu > 1.')
         logger.warn('****************')
         logger.warn()
 
-    dims = config.configure_dims(params)
-    policy = config.configure_ddpg(dims=dims, params=params, clip_return=clip_return)
+    # Configure dimensions and policy for MuJoCo
+    dims = config.configure_mujoco_dims(params)
+    policy = config.configure_mujoco_ddpg(dims=dims, params=params, clip_return=clip_return)
 
-    if params['env_name'] == 'GazeboWAMemptyEnv-v1':
-        rollout_params = {
-            'exploit': False,
-            'use_target_net': False,
-            'use_demo_states': True,
-            'compute_Q': False,
-            'T': params['T'],
-            #'render': 1,
-        }
+    # Configure rollout workers for MuJoCo
+    rollout_params = {
+        'exploit': False,
+        'use_target_net': False,
+        'compute_Q': False,
+        'T': params['T'],
+    }
 
-        eval_params = {
-            'exploit': True,
-            'use_target_net': params['test_with_polyak'],
-            #'use_demo_states': False,
-            'compute_Q': True,
-            'T': params['T'],
-            'rollout_batch_size': 1,
-            #'render': 1,
-        }
+    eval_params = {
+        'exploit': True,
+        'use_target_net': params['test_with_polyak'],
+        'compute_Q': True,
+        'T': params['T'],
+    }
 
-        for name in ['T', 'rollout_batch_size', 'gamma', 'noise_eps', 'random_eps']:
-            rollout_params[name] = params[name]
-            eval_params[name] = params[name]
+    for name in ['rollout_batch_size', 'gamma', 'noise_eps', 'random_eps']:
+        rollout_params[name] = params[name]
+        eval_params[name] = params[name]
 
+    rollout_worker = RolloutWorkerMuJoCo(params['make_env'], policy, dims, logger, **rollout_params)
+    rollout_worker.seed(rank_seed)
 
-
-        madeEnv = config.cached_make_env(params['make_env'])
-        rollout_worker = RolloutWorker(madeEnv, params['make_env'], policy, dims, logger, **rollout_params)
-        rollout_worker.seed(rank_seed)
-
-        evaluator = RolloutWorker(madeEnv, params['make_env'], policy, dims, logger, **eval_params)
-        evaluator.seed(rank_seed)
-    else:
-        rollout_params = {
-            'exploit': False,
-            'use_target_net': False,
-            'use_demo_states': True,
-            'compute_Q': False,
-            'T': params['T'],
-            #'render': 1,
-        }
-
-        eval_params = {
-            'exploit': True,
-            'use_target_net': params['test_with_polyak'],
-            #'use_demo_states': False,
-            'compute_Q': True,
-            'T': params['T'],
-            #'render': 1,
-        }
-
-        for name in ['T', 'rollout_batch_size', 'gamma', 'noise_eps', 'random_eps']:
-            rollout_params[name] = params[name]
-            eval_params[name] = params[name]
-
-
-        rollout_worker = RolloutWorkerOriginal(params['make_env'], policy, dims, logger, **rollout_params)
-        rollout_worker.seed(rank_seed)
-
-        evaluator = RolloutWorkerOriginal(params['make_env'], policy, dims, logger, **eval_params)
-        evaluator.seed(rank_seed)
+    evaluator = RolloutWorkerMuJoCo(params['make_env'], policy, dims, logger, **eval_params)
+    evaluator.seed(rank_seed)
 
     train(
         logdir=logdir, policy=policy, rollout_worker=rollout_worker,
         evaluator=evaluator, n_epochs=n_epochs, n_test_rollouts=params['n_test_rollouts'],
         n_cycles=params['n_cycles'], n_batches=params['n_batches'],
-        policy_save_interval=policy_save_interval, save_policies=save_policies, demo_file = demo_file)
+        policy_save_interval=policy_save_interval, save_policies=save_policies, demo_file=demo_file)
 
 
 @click.command()
-#@click.option('--env', type=str, default='FetchPickAndPlace-v0', help='the name of the OpenAI Gym environment that you want to train on')
-#@click.option('--env', type=str, default='GazeboWAMemptyEnv-v2', help='the name of the OpenAI Gym environment that you want to train on')
-@click.option('--env', type=str, default='GazeboWAMemptyEnv-v1', help='the name of the OpenAI Gym environment that you want to train on')
+@click.option('--env', type=str, default='HalfCheetah-v4', help='the name of the MuJoCo environment to train on')
 @click.option('--logdir', type=str, default=None, help='the path to where logs and policy pickles should go. If not specified, creates a folder in /tmp/')
-@click.option('--n_epochs', type=int, default=1000, help='the number of training epochs to run')
+@click.option('--n_epochs', type=int, default=200, help='the number of training epochs to run')
 @click.option('--num_cpu', type=int, default=1, help='the number of CPU cores to use (using MPI)')
 @click.option('--seed', type=int, default=0, help='the random seed used to seed both the environment and the training code')
 @click.option('--policy_save_interval', type=int, default=5, help='the interval with which policy pickles are saved. If set to 0, only the best and latest policy will be pickled.')
-@click.option('--replay_strategy', type=click.Choice(['future', 'none']), default='future', help='the HER replay strategy to be used. "future" uses HER, "none" disables HER.')
+@click.option('--replay_strategy', type=click.Choice(['future', 'none']), default='none', help='the HER replay strategy to be used. For MuJoCo dense rewards, use "none".')
 @click.option('--clip_return', type=int, default=1, help='whether or not returns should be clipped')
-@click.option('--demo_file', type=str, default = '/home/rjangir/wamdata/data_wam_reach_random_100_30_18.npz', help='demo data file path')
+@click.option('--demo_file', type=str, default=None, help='demo data file path (optional for behavior cloning)')
 def main(**kwargs):
     launch(**kwargs)
 

@@ -7,8 +7,8 @@ sys.path.append('/home/rjangir/software/workSpace/Overcoming-exploration-from-de
 
 
 from baselines import logger
-from ddpg import DDPG
-from her import make_sample_her_transitions
+from src.algorithms.ddpg import DDPG
+from src.algorithms.her import make_sample_her_transitions
 
 
 DEFAULT_ENV_PARAMS = {
@@ -112,6 +112,11 @@ def log_params(params, logger=logger):
 
 
 def configure_her(params):
+    # Check if HER should be disabled (e.g., for dense reward environments like MuJoCo)
+    if params.get('replay_strategy', 'future') == 'none':
+        # HER disabled - return None for sample_her_transitions
+        return None
+    
     env = cached_make_env(params['make_env'])
     env.reset()
 
@@ -173,15 +178,27 @@ def configure_dims(params):
     env.reset()
     obs, _, _, info = env.step(env.action_space.sample())
 
-    dims = {
-        'o': obs['observation'].shape[0],
-        'u': env.action_space.shape[0],
-        'g': obs['desired_goal'].shape[0],
-    }
+    # Check if this is a goal-conditioned environment (dict obs) or flat state (array obs)
+    if isinstance(obs, dict):
+        # Goal-conditioned environment (original behavior)
+        dims = {
+            'o': obs['observation'].shape[0],
+            'u': env.action_space.shape[0],
+            'g': obs['desired_goal'].shape[0],
+        }
 
-    for key, value in info.items():
-        value = np.array(value)
-        if value.ndim == 0:
-            value = value.reshape(1)
-        dims['info_{}'.format(key)] = value.shape[0]
+        for key, value in info.items():
+            value = np.array(value)
+            if value.ndim == 0:
+                value = value.reshape(1)
+            dims['info_{}'.format(key)] = value.shape[0]
+    else:
+        # Flat state environment (MuJoCo, etc.)
+        dims = {
+            'o': obs.shape[0],  # Direct observation dimension
+            'u': env.action_space.shape[0],  # Action dimension
+            'g': 0,  # No goals in flat state environments
+        }
+        # No info processing needed for basic flat state environments
+    
     return dims

@@ -2,9 +2,16 @@ from collections import deque
 
 import numpy as np
 import pickle
-from mujoco_py import MujocoException
 
-from util import convert_episode_to_batch_major, store_args
+# Handle optional mujoco_py import
+try:
+    from mujoco_py import MujocoException
+except ImportError:
+    # Create dummy exception if mujoco_py not available
+    class MujocoException(Exception):
+        pass
+
+from src.utils.util import convert_episode_to_batch_major, store_args
 
 
 class RolloutWorker:

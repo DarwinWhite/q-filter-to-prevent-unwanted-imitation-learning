@@ -5,9 +5,9 @@ import tensorflow as tf
 from tensorflow.contrib.staging import StagingArea
 
 from baselines import logger
-from util import (import_function, store_args, flatten_grads, transitions_in_episode_batch)
-from normalizer import Normalizer
-from replay_buffer import ReplayBuffer
+from src.utils.util import (import_function, store_args, flatten_grads, transitions_in_episode_batch)
+from src.utils.normalizer import Normalizer
+from src.algorithms.replay_buffer import ReplayBuffer
 from baselines.common.mpi_adam import MpiAdam
 from baselines.her.util import convert_episode_to_batch_major
 
@@ -211,11 +211,12 @@ class DDPG(object):
         self.buffer.store_episode(episode_batch)
 
         if update_stats:
-            # add transitions to normalizer
-            episode_batch['o_2'] = episode_batch['o'][:, 1:, :]
-            episode_batch['ag_2'] = episode_batch['ag'][:, 1:, :]
-            num_normalizing_transitions = transitions_in_episode_batch(episode_batch)
-            transitions = self.sample_transitions(episode_batch, num_normalizing_transitions)
+            # add transitions to normalizer - make copy to avoid modifying original
+            episode_batch_copy = {key: val.copy() for key, val in episode_batch.items()}
+            episode_batch_copy['o_2'] = episode_batch_copy['o'][:, 1:, :]
+            episode_batch_copy['ag_2'] = episode_batch_copy['ag'][:, 1:, :]
+            num_normalizing_transitions = transitions_in_episode_batch(episode_batch_copy)
+            transitions = self.sample_transitions(episode_batch_copy, num_normalizing_transitions)
 
             o, o_2, g, ag = transitions['o'], transitions['o_2'], transitions['g'], transitions['ag']
             transitions['o'], transitions['g'] = self._preprocess_og(o, ag, g)
