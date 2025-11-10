@@ -85,7 +85,7 @@ All changes maintain full backward compatibility:
 
 ### Source Code (`src/`)
 - **`algorithms/`** - Core RL algorithms (DDPG, HER, Q-Filter, Actor-Critic, Replay Buffer, Rollouts)
-- **`utils/`** - Utilities (TensorFlow compatibility, demo generation, normalizer, general utilities)
+- **`utils/`** - Utilities (Demo generation, normalizer, general utilities)
 - **`experiment/`** - Experiment configuration and execution scripts
 - **`data_generation/`** - Data processing and generation modules
 
