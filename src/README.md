@@ -12,7 +12,6 @@ This directory contains the main Q-Filter implementation organized into logical 
 - `rollout.py` - Environment rollout and trajectory collection utilities
 
 ### `utils/` - Utilities and Support Modules
-- `tf_compat.py` - TensorFlow 1.x/2.x compatibility layer
 - `generate_demos.py` - Convert .pkl parameter files to .npz demonstrations (TensorFlow-based)
 - `normalizer.py` - State and action normalization utilities  
 - `util.py` - General utility functions and helpers
@@ -35,8 +34,7 @@ from src.algorithms import ddpg, her, actor_critic
 # Import utilities
 from src.utils import generate_demos, normalizer
 
-# Use TensorFlow compatibility
-import src.utils.tf_compat
+# Use TensorFlow
 import tensorflow as tf
 ```
 
