@@ -248,9 +248,6 @@ def launch(
 @click.option('--replay_strategy', type=click.Choice(['future', 'none']), default='none', help='the HER replay strategy to be used. For MuJoCo dense rewards, use "none".')
 @click.option('--clip_return', type=int, default=1, help='whether or not returns should be clipped')
 @click.option('--demo_file', type=str, default=None, help='demo data file path (optional for behavior cloning)')
-@click.option('--bc_loss', type=int, default=0, help='enable behavior cloning loss (1 to enable, 0 to disable)')
-@click.option('--q_filter', type=int, default=0, help='enable Q-filtering (1 to enable, 0 to disable) - requires bc_loss=1')
-@click.option('--num_demo', type=int, default=100, help='number of demonstration episodes to use (only relevant when demo_file provided)')
 def main(**kwargs):
     launch(**kwargs)
 
