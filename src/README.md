@@ -13,7 +13,7 @@ This directory contains the main Q-Filter implementation organized into logical 
 
 ### `utils/` - Utilities and Support Modules
 - `tf_compat.py` - TensorFlow 1.x/2.x compatibility layer
-- `generate_demos.py` - Convert .pkl policies to .npz demonstrations
+- `generate_demos.py` - Convert .pkl parameter files to .npz demonstrations (TensorFlow-based)
 - `normalizer.py` - State and action normalization utilities  
 - `util.py` - General utility functions and helpers
 

@@ -81,7 +81,7 @@ All changes maintain full backward compatibility:
 - **`requirements.txt`** - Cleaned up dependency list
 - **`.gitignore`** - Git configuration (excludes `/env` folder)
 - **`README.md`**, **`SETUP.md`**, **`PROJECT_STATUS.md`**, **`LICENSE`** - Documentation
-- **`assets/`**, **`demos/`**, **`env/`** - Data and environment folders
+- **`assets/`**, **`params/`**, **`env/`** - Data and environment folders
 
 ### Source Code (`src/`)
 - **`algorithms/`** - Core RL algorithms (DDPG, HER, Q-Filter, Actor-Critic, Replay Buffer, Rollouts)
@@ -172,7 +172,7 @@ python train_mujoco.py --env HalfCheetah-v4 --n_epochs 200
 
 #### With Behavior Cloning (when demo data available)
 ```bash
-python train_mujoco.py --env HalfCheetah-v4 --n_epochs 200 --demo_file path/to/demos.npz
+python train_mujoco.py --env HalfCheetah-v4 --n_epochs 200 --demo_file path/to/params.npz
 ```
 
 #### Multi-CPU Training

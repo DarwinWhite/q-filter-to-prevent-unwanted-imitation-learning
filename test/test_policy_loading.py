@@ -216,7 +216,7 @@ def run_quick_episode_test():
     
     try:
         # Test with HalfCheetah expert policy
-        policy = load_policy_from_pkl('demos/cheetah_params.pkl', 17, 6)
+        policy = load_policy_from_pkl('params/cheetah_params.pkl', 17, 6)
         env = gym.make('HalfCheetah-v4')  # Use modern version
         
         # Handle modern gym API

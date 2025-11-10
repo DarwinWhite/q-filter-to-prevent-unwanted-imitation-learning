@@ -67,11 +67,11 @@ def check_environment():
         sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
         from src.utils.generate_demos import load_policy_from_pkl
         
-        if os.path.exists('demos/cheetah_params.pkl'):
-            policy = load_policy_from_pkl('demos/cheetah_params.pkl', 17, 6)
+        if os.path.exists('params/cheetah_params.pkl'):
+            policy = load_policy_from_pkl('params/cheetah_params.pkl', 17, 6)
             print("Policy loading working")
         else:
-            print("Policy file 'demos/cheetah_params.pkl' not found")
+            print("Policy file 'params/cheetah_params.pkl' not found")
     except Exception as e:
         print(f"Policy loading failed: {e}")
     
@@ -79,9 +79,10 @@ def check_environment():
     print("Environment Status: READY" if True else "Environment Status: NEEDS SETUP")
     
     print("\nNext Steps:")
-    print("1. Run 'python test/test_policy_loading.py' for detailed validation")
-    print("2. Run 'python src/utils/generate_demos.py' to create demonstration files") 
-    print("3. Modify src/experiment configs to work with MuJoCo environments")
+    print("1. Run 'python test/test_parameter_files.py' to verify all parameter files")
+    print("2. Run 'python test/create_dummy_demos.py' to create demo files for testing") 
+    print("3. Test BC integration with 'python src/experiment/train_mujoco.py --bc_loss 1 --demo_file demo_data/halfcheetah_expert_demos.npz'")
+    print("4. Verify all parameter quality levels with 'python test/test_mujoco_integration.py'")
 
 if __name__ == "__main__":
     check_environment()
