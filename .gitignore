@@ -14,10 +14,11 @@ keys/
 __pycache__/
 experiment/__*
 
-
 # Virtualenv
 /env
 
+# Generated demo data (exclude from git)
+/demo_data/
 
 *.sublime-project
 *.sublime-workspace
