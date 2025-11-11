@@ -86,37 +86,54 @@ def train(policy, rollout_worker, evaluator,
             print(f"  Testing policy with {n_test_rollouts} rollouts...")
         logger.info("Testing")
         evaluator.clear_history()
+        
+        # Collect test episode returns for this epoch only
+        test_episode_returns = []
         for test_episode in range(n_test_rollouts):
-            evaluator.generate_rollouts()
-
+            test_result = evaluator.generate_rollouts()
+            # Calculate episode return directly from the episode data
+            test_return = test_result['r'].sum() if isinstance(test_result['r'], list) else test_result['r'].mean()
+            test_episode_returns.append(test_return)
+        
+        # Calculate epoch-specific statistics
+        current_test_return = np.mean(test_episode_returns) if test_episode_returns else 0.0
+        
+        # For training return, we'll use the actual episode returns from this epoch's cycles
+        # Note: rollout_worker.current_success_rate() gives accumulated history, which is misleading
+        
         # record logs
         logger.record_tabular('epoch', epoch)
         
+        # Override the test return with our epoch-specific calculation
+        logger.record_tabular('test/mean_episode_return', mpi_average(current_test_return))
+        logger.record_tabular('test/episode', (epoch + 1) * n_test_rollouts)  # Total episodes tested so far
+        
+        # Get other logs but override the problematic accumulated statistics
         for key, val in evaluator.logs('test'):
-            logger.record_tabular(key, mpi_average(val))
+            if not key.startswith('mean_episode'):  # Skip the accumulated episode return
+                logger.record_tabular(key, mpi_average(val))
+                
         for key, val in rollout_worker.logs('train'):
             logger.record_tabular(key, mpi_average(val))
         for key, val in policy.logs():
             logger.record_tabular(key, mpi_average(val))
 
         if rank == 0:
-            # Print epoch summary
-            test_return = mpi_average(evaluator.current_success_rate())
-            train_return = mpi_average(rollout_worker.current_success_rate())
+            # Print epoch summary with epoch-specific returns
+            train_return = mpi_average(rollout_worker.current_success_rate())  # This is still accumulated, but we'll note it
             buffer_size = policy.get_current_buffer_size()
             print(f"  Epoch {epoch+1} Summary:")
-            print(f"    Test Return: {test_return:.2f}")
-            print(f"    Train Return: {train_return:.2f}")
+            print(f"    Test Return (This Epoch): {current_test_return:.2f}")
+            print(f"    Train Return (Rolling Avg): {train_return:.2f}")  # Note: this is still accumulated
             print(f"    Buffer Size: {buffer_size}")
             print(f"    Best Return So Far: {best_return:.2f} (Epoch {best_return_epoch+1})")
             
             logger.dump_tabular()
 
         # save the policy if it's better than the previous ones
-        # For MuJoCo, we use episode return instead of success rate
-        episode_return = mpi_average(evaluator.current_success_rate())  # This returns mean episode return for MuJoCo
-        if rank == 0 and episode_return >= best_return and save_policies:
-            best_return = episode_return
+        # Use epoch-specific test return instead of accumulated history
+        if rank == 0 and current_test_return >= best_return and save_policies:
+            best_return = current_test_return
             best_return_epoch = epoch
             logger.info('New best episode return: {}. Saving policy to {} ...'.format(best_return, best_policy_path))
             evaluator.save_policy(best_policy_path)
@@ -149,7 +166,7 @@ def train(policy, rollout_worker, evaluator,
 
 def launch(
     env, logdir, n_epochs, num_cpu, seed, replay_strategy, policy_save_interval, clip_return, demo_file,
-    override_params={}, save_policies=True
+    bc_loss=0, q_filter=0, num_demo=0, override_params={}, save_policies=True
 ):
     # Fork for multi-CPU MPI implementation.
     if num_cpu > 1:
@@ -184,6 +201,10 @@ def launch(
     params = config.DEFAULT_MUJOCO_PARAMS.copy()
     params['env_name'] = env
     params['replay_strategy'] = replay_strategy
+    # Add BC and Q-filter parameters
+    params['bc_loss'] = bc_loss
+    params['q_filter'] = q_filter
+    params['num_demo'] = num_demo
     if env in config.DEFAULT_MUJOCO_ENV_PARAMS:
         params.update(config.DEFAULT_MUJOCO_ENV_PARAMS[env])  # merge env-specific parameters
     params.update(**override_params)  # makes it possible to override any parameter
