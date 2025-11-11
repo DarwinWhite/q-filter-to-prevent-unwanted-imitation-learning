@@ -1,9 +1,14 @@
 import numpy as np
 import gym
 import gym_gazebo
-
+import os
 import sys
-sys.path.append('/home/rjangir/software/workSpace/Overcoming-exploration-from-demos/')
+
+# Add project root for portable imports
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, project_root)
+
+# OpenAI Baselines should be available via pip install - no hardcoded path needed
 
 
 from baselines import logger

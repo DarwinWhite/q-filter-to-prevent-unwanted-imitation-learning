@@ -7,10 +7,12 @@ import json
 from mpi4py import MPI
 import resource
 
-# Add path for baselines
-sys.path.append('/home/rjangir/software/workSpace/Overcoming-exploration-from-demos/')
-# Add project root for src imports
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
+# Add project root for src imports (portable solution)
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, project_root)
+
+# OpenAI Baselines should be available via pip install - no hardcoded path needed
+# If you need a specific baselines version, use: pip install git+https://github.com/openai/baselines.git@commit_hash
 
 from baselines import logger
 from baselines.common import set_global_seeds

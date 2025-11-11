@@ -14,7 +14,8 @@ warnings.filterwarnings('ignore')
 
 # Add project paths
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
-sys.path.append('/home/rjangir/software/workSpace/Overcoming-exploration-from-demos/')
+
+# OpenAI Baselines should be available via pip install - no hardcoded path needed
 
 def load_policy_parameters(pkl_file_path: str) -> dict:
     """

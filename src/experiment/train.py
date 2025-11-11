@@ -7,7 +7,11 @@ import json
 from mpi4py import MPI
 import resource
 
-sys.path.append('/home/rjangir/software/workSpace/Overcoming-exploration-from-demos/')
+# Add project root for portable imports
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, project_root)
+
+# OpenAI Baselines should be available via pip install - no hardcoded path needed
 
 from baselines import logger
 from baselines.common import set_global_seeds
@@ -234,7 +238,7 @@ def launch(
 @click.option('--policy_save_interval', type=int, default=5, help='the interval with which policy pickles are saved. If set to 0, only the best and latest policy will be pickled.')
 @click.option('--replay_strategy', type=click.Choice(['future', 'none']), default='future', help='the HER replay strategy to be used. "future" uses HER, "none" disables HER.')
 @click.option('--clip_return', type=int, default=1, help='whether or not returns should be clipped')
-@click.option('--demo_file', type=str, default = '/home/rjangir/wamdata/data_wam_reach_random_100_30_18.npz', help='demo data file path')
+@click.option('--demo_file', type=str, default=None, help='demo data file path (optional for behavior cloning)')
 def main(**kwargs):
     launch(**kwargs)
 

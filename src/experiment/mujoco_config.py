@@ -3,9 +3,11 @@ import gym
 import sys
 import os
 
-# Add baselines to path (like original config.py)
-sys.path.append('/home/rjangir/software/workSpace/Overcoming-exploration-from-demos/')
-sys.path.append('/home/darwin_white/csce642-project/q-filter-to-prevent-unwanted-imitation-learning/src/algorithms')
+# Add project root for portable imports
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, project_root)
+
+# OpenAI Baselines should be available via pip install - no hardcoded path needed
 
 from baselines import logger
 from src.algorithms.ddpg import DDPG

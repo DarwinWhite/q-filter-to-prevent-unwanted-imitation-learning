@@ -16,13 +16,10 @@ import sys
 import numpy as np
 
 # Add paths
-sys.path.append('/home/rjangir/software/workSpace/Overcoming-exploration-from-demos/')
-sys.path.append('/home/darwin_white/csce642-project/q-filter-to-prevent-unwanted-imitation-learning/src/experiment')
-sys.path.append('/home/darwin_white/csce642-project/q-filter-to-prevent-unwanted-imitation-learning/src/algorithms')
-sys.path.append('/home/darwin_white/csce642-project/q-filter-to-prevent-unwanted-imitation-learning/src/utils')
-sys.path.append('/home/darwin_white/csce642-project/q-filter-to-prevent-unwanted-imitation-learning/src')
 # Add project root for src imports
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+
+# OpenAI Baselines should be available via pip install - no hardcoded path needed
 
 print("Testing HalfCheetah-v4 MuJoCo Integration...")
 print("=" * 50)
