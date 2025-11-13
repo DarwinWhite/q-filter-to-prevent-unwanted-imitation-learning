@@ -30,16 +30,16 @@ def cached_make_env(make_env):
 # MuJoCo environment parameters - these are for continuous control with dense rewards
 DEFAULT_MUJOCO_ENV_PARAMS = {
     'HalfCheetah-v4': {
-        'n_cycles': 50,  # More cycles since we have dense rewards (not sparse like goal-conditioned)
+        'n_cycles': 20,  # Reduced for faster experimentation (was 50)
     },
     'Ant-v4': {
-        'n_cycles': 50,
+        'n_cycles': 20,
     },
     'Hopper-v4': {
-        'n_cycles': 50,
+        'n_cycles': 20,
     },
     'Walker2d-v4': {
-        'n_cycles': 50,
+        'n_cycles': 20,
     },
 }
 
@@ -60,9 +60,9 @@ DEFAULT_MUJOCO_PARAMS = {
     'scope': 'ddpg',  # can be tweaked for testing
     'relative_goals': False,  # Not applicable for MuJoCo - no goals
     # training
-    'n_cycles': 50,  # per epoch - higher for dense rewards
+    'n_cycles': 20,  # per epoch - higher for dense rewards
     'rollout_batch_size': 1,  # per mpi thread
-    'n_batches': 40,  # training batches per cycle
+    'n_batches': 20,  # training batches per cycle
     'batch_size': 1024,  # per mpi thread, measured in transitions
     'n_test_rollouts': 10,  # number of test rollouts per epoch
     'test_with_polyak': False,  # run test episodes with the target network

@@ -25,12 +25,36 @@ from src.utils.util import mpi_fork
 from subprocess import CalledProcessError
 
 
-def mpi_average(value):
-    if value == []:
-        value = [0.]
-    if not isinstance(value, list):
-        value = [value]
-    return mpi_moments(np.array(value))[0]
+def safe_mpi_average(value):
+    """Safely average a value across MPI workers, handling various data types"""
+    try:
+        # Handle empty arrays properly
+        if hasattr(value, 'size'):
+            if value.size == 0:  # Use .size for numpy arrays
+                return 0.0
+        elif value == [] or value is None:
+            return 0.0
+        
+        # If it's already a scalar, just return it for single worker or broadcast it
+        if isinstance(value, (int, float, np.number)):
+            if MPI.COMM_WORLD.Get_size() == 1:
+                return float(value)
+            else:
+                return mpi_moments(np.array([value]))[0]
+        
+        # Convert to list if not already
+        if not isinstance(value, list):
+            value = [value]
+        
+        return mpi_moments(np.array(value))[0]
+    except Exception as e:
+        # If MPI fails, return local value or 0.0
+        if isinstance(value, (int, float, np.number)):
+            return float(value)
+        elif hasattr(value, '__len__') and len(value) > 0:
+            return np.mean(value)
+        else:
+            return 0.0
 
 
 def train(policy, rollout_worker, evaluator,
@@ -107,22 +131,24 @@ def train(policy, rollout_worker, evaluator,
         logger.record_tabular('epoch', epoch)
         
         # Override the test return with our epoch-specific calculation
-        logger.record_tabular('test/mean_episode_return', mpi_average(current_test_return))
+        logger.record_tabular('test/mean_episode_return', safe_mpi_average(current_test_return))
         logger.record_tabular('test/episode', (epoch + 1) * n_test_rollouts)  # Total episodes tested so far
         
         # Get other logs but override the problematic accumulated statistics
         for key, val in evaluator.logs('test'):
             if not key.startswith('mean_episode'):  # Skip the accumulated episode return
-                logger.record_tabular(key, mpi_average(val))
+                logger.record_tabular(key, safe_mpi_average(val))
                 
         for key, val in rollout_worker.logs('train'):
-            logger.record_tabular(key, mpi_average(val))
+            logger.record_tabular(key, safe_mpi_average(val))
         for key, val in policy.logs():
-            logger.record_tabular(key, mpi_average(val))
+            logger.record_tabular(key, safe_mpi_average(val))
 
         if rank == 0:
             # Print epoch summary with epoch-specific returns
-            train_return = mpi_average(rollout_worker.current_success_rate())  # This is still accumulated, but we'll note it
+            # For MuJoCo, get the mean episode return (which replaces success rate)
+            train_return_raw = rollout_worker.current_success_rate()  # This returns mean episode return for MuJoCo
+            train_return = train_return_raw if isinstance(train_return_raw, (int, float)) else safe_mpi_average(train_return_raw)
             buffer_size = policy.get_current_buffer_size()
             print(f"  Epoch {epoch+1} Summary:")
             print(f"    Test Return (This Epoch): {current_test_return:.2f}")
@@ -147,8 +173,7 @@ def train(policy, rollout_worker, evaluator,
 
         # make sure that different threads have different seeds
         if rank == 0:
-            print(f"✨ Best episode return so far: {best_return:.2f} (achieved in epoch {best_return_epoch+1})")
-        logger.info("Best episode return so far ", best_return, " In epoch number ", best_return_epoch)
+            print(f"Best episode return so far: {best_return:.2f} (achieved in epoch {best_return_epoch+1})")
         local_uniform = np.random.uniform(size=(1,))
         
     # Final training summary
@@ -168,7 +193,7 @@ def train(policy, rollout_worker, evaluator,
 
 def launch(
     env, logdir, n_epochs, num_cpu, seed, replay_strategy, policy_save_interval, clip_return, demo_file,
-    bc_loss=0, q_filter=0, num_demo=0, override_params={}, save_policies=True
+    bc_loss=None, q_filter=None, num_demo=0, n_cycles=None, n_batches=None, override_params={}, save_policies=True
 ):
     # Fork for multi-CPU MPI implementation.
     if num_cpu > 1:
@@ -210,6 +235,20 @@ def launch(
     if env in config.DEFAULT_MUJOCO_ENV_PARAMS:
         params.update(config.DEFAULT_MUJOCO_ENV_PARAMS[env])  # merge env-specific parameters
     params.update(**override_params)  # makes it possible to override any parameter
+    
+    # Override with command-line parameters if provided
+    if n_cycles is not None:
+        params['n_cycles'] = n_cycles
+        print(f"Override: n_cycles = {n_cycles}")
+    if n_batches is not None:
+        params['n_batches'] = n_batches
+        print(f"Override: n_batches = {n_batches}")
+    if bc_loss is not None:
+        params['bc_loss'] = bc_loss
+        print(f"Override: bc_loss = {bc_loss}")
+    if q_filter is not None:
+        params['q_filter'] = q_filter
+        print(f"Override: q_filter = {q_filter}")
     
     with open(os.path.join(logger.get_dir(), 'params.json'), 'w') as f:
         json.dump(params, f)
@@ -271,6 +310,10 @@ def launch(
 @click.option('--replay_strategy', type=click.Choice(['future', 'none']), default='none', help='the HER replay strategy to be used. For MuJoCo dense rewards, use "none".')
 @click.option('--clip_return', type=int, default=1, help='whether or not returns should be clipped')
 @click.option('--demo_file', type=str, default=None, help='demo data file path (optional for behavior cloning)')
+@click.option('--n_cycles', type=int, default=None, help='number of training cycles per epoch (overrides config default)')
+@click.option('--n_batches', type=int, default=None, help='number of training batches per cycle (overrides config default)')
+@click.option('--bc_loss', type=int, default=None, help='whether to use behavior cloning loss (0/1, overrides config default)')
+@click.option('--q_filter', type=int, default=None, help='whether to use Q-value filtering (0/1, overrides config default)')
 def main(**kwargs):
     launch(**kwargs)
 
