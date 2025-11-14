@@ -178,8 +178,8 @@ def train(policy, rollout_worker, evaluator,
         
     # Final training summary
     if rank == 0:
-        print(f"\n🎉 Training Completed!")
-        print(f"📈 Final Results:")
+        print(f"\nTraining Completed!")
+        print(f"Final Results:")
         print(f"   • Total epochs completed: {n_epochs}")
         print(f"   • Best episode return: {best_return:.2f}")
         print(f"   • Best epoch: {best_return_epoch+1}")
