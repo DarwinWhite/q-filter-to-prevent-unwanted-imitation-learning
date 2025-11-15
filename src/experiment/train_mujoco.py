@@ -211,6 +211,13 @@ def launch(
 
     # Configure logging
     if rank == 0:
+        # If no logdir specified, create one in project's logs directory with timestamp
+        if logdir is None:
+            import datetime
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S-%f')[:-3]
+            project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+            logdir = os.path.join(project_root, 'logs', f'{env}-{timestamp}')
+        
         if logdir or logger.get_dir() is None:
             logger.configure(dir=logdir)
     else:
@@ -302,7 +309,7 @@ def launch(
 
 @click.command()
 @click.option('--env', type=str, default='HalfCheetah-v4', help='the name of the MuJoCo environment to train on')
-@click.option('--logdir', type=str, default=None, help='the path to where logs and policy pickles should go. If not specified, creates a folder in /tmp/')
+@click.option('--logdir', type=str, default=None, help='the path to where logs and policy pickles should go. If not specified, creates a timestamped folder in the project\'s logs/ directory')
 @click.option('--n_epochs', type=int, default=200, help='the number of training epochs to run')
 @click.option('--num_cpu', type=int, default=1, help='the number of CPU cores to use (using MPI)')
 @click.option('--seed', type=int, default=0, help='the random seed used to seed both the environment and the training code')
