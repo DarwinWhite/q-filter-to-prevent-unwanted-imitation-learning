@@ -101,7 +101,47 @@ class DDPGMuJoCo:
         """Initialize demo buffer for behavior cloning"""
         return self.ddpg.initDemoBuffer(demo_file)
     
+    def __getstate__(self):
+        """Handle pickling by delegating to the wrapped DDPG instance"""
+        return {
+            'original_input_dims': self.original_input_dims,
+            'has_goals': self.has_goals,
+            'ddpg': self.ddpg
+        }
+    
+    def __setstate__(self, state):
+        """Handle unpickling by restoring the wrapped DDPG instance"""
+        # Check if this is our new wrapper format
+        if isinstance(state, dict) and 'original_input_dims' in state and 'ddpg' in state:
+            # New format with wrapper state
+            self.original_input_dims = state['original_input_dims']
+            self.has_goals = state['has_goals']
+            self.ddpg = state['ddpg']
+        elif hasattr(state, '__dict__') and hasattr(state, 'ddpg'):
+            # This is already a DDPGMuJoCo object, just copy its attributes
+            self.__dict__.update(state.__dict__)
+        else:
+            # Old format - state is the serialized DDPG state
+            from src.algorithms.ddpg import DDPG
+            
+            # Create a new DDPG instance and restore its state
+            self.ddpg = DDPG.__new__(DDPG)  # Create without calling __init__
+            self.ddpg.__setstate__(state)   # Let DDPG handle its own state restoration
+            
+            # Try to infer the original dimensions from the DDPG instance
+            try:
+                dims = self.ddpg.input_dims
+                self.original_input_dims = dims.copy()
+                self.has_goals = dims['g'] > 1
+            except Exception as e:
+                # Fallback values for HalfCheetah
+                self.original_input_dims = {'o': 17, 'g': 0, 'u': 6}
+                self.has_goals = False
+    
     # Delegate other attributes to the wrapped DDPG instance
     def __getattr__(self, name):
         """Delegate any other method calls to the wrapped DDPG instance"""
+        if name == 'ddpg':
+            # Prevent recursion when trying to access ddpg itself
+            raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
         return getattr(self.ddpg, name)
