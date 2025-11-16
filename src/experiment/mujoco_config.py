@@ -53,16 +53,16 @@ DEFAULT_MUJOCO_PARAMS = {
     'network_class': 'baselines.her.actor_critic:ActorCritic',
     'Q_lr': 0.001,  # critic learning rate
     'pi_lr': 0.001,  # actor learning rate
-    'buffer_size': int(3E5),  # for experience replay (reduced to prevent OOM issues)
+    'buffer_size': int(1E5),  # for experience replay (optimized for speed/stability balance)
     'polyak': 0.8,  # polyak averaging coefficient
-    'action_l2': 0.1,  # quadratic penalty on actions (reduced to encourage movement)
+    'action_l2': 0.3,  # quadratic penalty on actions (increased to prevent scooting exploit)
     'clip_obs': 200.,
     'scope': 'ddpg',  # can be tweaked for testing
     'relative_goals': False,  # Not applicable for MuJoCo - no goals
     # training
     'n_cycles': 20,  # per epoch - higher for dense rewards
     'rollout_batch_size': 1,  # per mpi thread
-    'n_batches': 20,  # training batches per cycle
+    'n_batches': 15,  # training batches per cycle (reduced for faster training)
     'batch_size': 1024,  # per mpi thread, measured in transitions
     'n_test_rollouts': 10,  # number of test rollouts per epoch
     'test_with_polyak': False,  # run test episodes with the target network
