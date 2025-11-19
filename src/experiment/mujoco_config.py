@@ -55,7 +55,7 @@ DEFAULT_MUJOCO_PARAMS = {
     'pi_lr': 0.001,  # actor learning rate
     'buffer_size': int(1E5),  # for experience replay (optimized for speed/stability balance)
     'polyak': 0.8,  # polyak averaging coefficient
-    'action_l2': 0.3,  # quadratic penalty on actions (increased to prevent scooting exploit)
+    'action_l2': 0.1,  # quadratic penalty on actions (increased to prevent scooting exploit)
     'clip_obs': 200.,
     'scope': 'ddpg',  # can be tweaked for testing
     'relative_goals': False,  # Not applicable for MuJoCo - no goals

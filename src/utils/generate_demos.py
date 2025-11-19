@@ -10,6 +10,7 @@ import pickle
 import numpy as np
 import gym
 import warnings
+import tensorflow as tf
 warnings.filterwarnings('ignore')
 
 # Add project paths
@@ -17,7 +18,83 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 
 # OpenAI Baselines should be available via pip install - no hardcoded path needed
 
-def load_policy_parameters(pkl_file_path: str) -> dict:
+class PolicyNetwork:
+    """
+    Neural network policy that matches the structure in the pickle files.
+    Based on the parameters, this appears to be a 2-layer feedforward network.
+    """
+    
+    def __init__(self, obs_dim, action_dim, sess=None):
+        self.obs_dim = obs_dim
+        self.action_dim = action_dim
+        self.sess = sess if sess is not None else tf.get_default_session()
+        
+        # Placeholders
+        self.obs_ph = tf.placeholder(tf.float32, [None, obs_dim], name='obs')
+        
+        # Build network
+        self._build_network()
+        
+        # Initialize variables
+        self.sess.run(tf.global_variables_initializer())
+    
+    def _build_network(self):
+        """Build the policy network"""
+        # First hidden layer (fc0)
+        self.fc0_w = tf.Variable(tf.zeros([self.obs_dim, 300]), name='fc0_w')
+        self.fc0_b = tf.Variable(tf.zeros([300]), name='fc0_b')
+        h1 = tf.nn.relu(tf.matmul(self.obs_ph, self.fc0_w) + self.fc0_b)
+        
+        # Second hidden layer (fc1)
+        self.fc1_w = tf.Variable(tf.zeros([300, 300]), name='fc1_w')
+        self.fc1_b = tf.Variable(tf.zeros([300]), name='fc1_b')
+        h2 = tf.nn.relu(tf.matmul(h1, self.fc1_w) + self.fc1_b)
+        
+        # Output layer - mean actions (last_fc)
+        self.last_fc_w = tf.Variable(tf.zeros([300, self.action_dim]), name='last_fc_w')
+        self.last_fc_b = tf.Variable(tf.zeros([self.action_dim]), name='last_fc_b')
+        self.action_mean = tf.matmul(h2, self.last_fc_w) + self.last_fc_b
+        
+        # Output layer - log std (last_fc_log_std)
+        self.last_fc_log_std_w = tf.Variable(tf.zeros([300, self.action_dim]), name='last_fc_log_std_w')
+        self.last_fc_log_std_b = tf.Variable(tf.zeros([self.action_dim]), name='last_fc_log_std_b')
+        self.action_log_std = tf.matmul(h2, self.last_fc_log_std_w) + self.last_fc_log_std_b
+        
+        # For deterministic policy (expert demonstrations), we use mean actions
+        self.action = tf.tanh(self.action_mean)  # Assume bounded actions
+    
+    def load_parameters(self, policy_params):
+        """Load parameters from the pickle file into the network"""
+        param_assign_ops = []
+        
+        # Map parameter names to TF variables
+        param_mapping = {
+            'fc0/weight': (self.fc0_w, policy_params['fc0/weight'].T),  # Transpose for TF format
+            'fc0/bias': (self.fc0_b, policy_params['fc0/bias']),
+            'fc1/weight': (self.fc1_w, policy_params['fc1/weight'].T),
+            'fc1/bias': (self.fc1_b, policy_params['fc1/bias']),
+            'last_fc/weight': (self.last_fc_w, policy_params['last_fc/weight'].T),
+            'last_fc/bias': (self.last_fc_b, policy_params['last_fc/bias']),
+            'last_fc_log_std/weight': (self.last_fc_log_std_w, policy_params['last_fc_log_std/weight'].T),
+            'last_fc_log_std/bias': (self.last_fc_log_std_b, policy_params['last_fc_log_std/bias'])
+        }
+        
+        for param_name, (tf_var, param_value) in param_mapping.items():
+            param_assign_ops.append(tf_var.assign(param_value))
+        
+        # Execute all assignments
+        self.sess.run(param_assign_ops)
+        print("Loaded policy parameters successfully")
+    
+    def get_action(self, obs):
+        """Get action from the policy given observation"""
+        if obs.ndim == 1:
+            obs = obs.reshape(1, -1)
+        
+        action = self.sess.run(self.action, feed_dict={self.obs_ph: obs})
+        return action.flatten()
+
+def load_policy_parameters(pkl_file_path):
     """
     Load policy parameters from a .pkl file.
     
@@ -30,13 +107,15 @@ def load_policy_parameters(pkl_file_path: str) -> dict:
     try:
         with open(pkl_file_path, 'rb') as f:
             params = pickle.load(f)
+        print("Successfully loaded policy parameters from", pkl_file_path)
+        print("Parameter keys:", list(params.keys()))
         return params
     except Exception as e:
-        print(f"Error loading policy parameters from {pkl_file_path}: {e}")
+        print("Error loading policy parameters from {}: {}".format(pkl_file_path, e))
         return None
 
-def collect_demonstrations_with_params(env_name: str, pkl_file_path: str, 
-                                     num_episodes: int = 100, max_steps: int = 1000) -> dict:
+def collect_demonstrations_with_params(env_name, pkl_file_path, 
+                                     num_episodes=100, max_steps=1000):
     """
     Collect demonstrations using a pre-trained policy from parameter files.
     
@@ -49,7 +128,7 @@ def collect_demonstrations_with_params(env_name: str, pkl_file_path: str,
     Returns:
         Dictionary containing demonstration data
     """
-    print(f"Collecting demonstrations for {env_name} using {pkl_file_path}")
+    print("Collecting demonstrations for {} using {}".format(env_name, pkl_file_path))
     
     # Load policy parameters
     policy_params = load_policy_parameters(pkl_file_path)
@@ -58,56 +137,62 @@ def collect_demonstrations_with_params(env_name: str, pkl_file_path: str,
     
     # Create environment
     env = gym.make(env_name)
+    obs_dim = env.observation_space.shape[0]
+    action_dim = env.action_space.shape[0]
     
-    # Storage for demonstrations
-    episodes = []
-    
-    for episode in range(num_episodes):
-        # Reset environment
-        reset_result = env.reset()
-        if isinstance(reset_result, tuple):
-            obs, _ = reset_result
-        else:
-            obs = reset_result
+    # Create TensorFlow session and policy network
+    with tf.Session() as sess:
+        policy = PolicyNetwork(obs_dim, action_dim, sess)
+        policy.load_parameters(policy_params)
         
-        episode_data = {
-            'observations': [obs.copy()],
-            'actions': [],
-            'rewards': [],
-            'done': False
-        }
+        # Storage for demonstrations
+        episodes = []
         
-        for step in range(max_steps):
-            # For now, use a simple policy based on the parameter structure
-            # This is a placeholder - in practice, you'd reconstruct the neural network
-            # and use the loaded parameters to generate actions
-            
-            # Simple heuristic action based on observation (placeholder)
-            action = env.action_space.sample()  # Random action as placeholder
-            
-            # Take action in environment
-            step_result = env.step(action)
-            if len(step_result) == 4:
-                next_obs, reward, done, info = step_result
+        for episode in range(num_episodes):
+            # Reset environment
+            reset_result = env.reset()
+            if isinstance(reset_result, tuple):
+                obs, _ = reset_result
             else:
-                next_obs, reward, terminated, truncated, info = step_result
-                done = terminated or truncated
+                obs = reset_result
             
-            # Store transition
-            episode_data['actions'].append(action.copy())
-            episode_data['rewards'].append(reward)
-            episode_data['observations'].append(next_obs.copy())
+            episode_data = {
+                'observations': [obs.copy()],
+                'actions': [],
+                'rewards': [],
+                'done': False
+            }
             
-            obs = next_obs
+            total_reward = 0
+            for step in range(max_steps):
+                # Get action from the loaded policy
+                action = policy.get_action(obs)
+                
+                # Take action in environment
+                step_result = env.step(action)
+                if len(step_result) == 4:
+                    next_obs, reward, done, info = step_result
+                else:
+                    next_obs, reward, terminated, truncated, info = step_result
+                    done = terminated or truncated
+                
+                # Store transition
+                episode_data['actions'].append(action.copy())
+                episode_data['rewards'].append(reward)
+                episode_data['observations'].append(next_obs.copy())
+                
+                obs = next_obs
+                total_reward += reward
+                
+                if done:
+                    episode_data['done'] = True
+                    break
             
-            if done:
-                episode_data['done'] = True
-                break
-        
-        episodes.append(episode_data)
-        
-        if (episode + 1) % 10 == 0:
-            print(f"  Completed {episode + 1}/{num_episodes} episodes")
+            episodes.append(episode_data)
+            
+            if (episode + 1) % 10 == 0:
+                print("  Completed {}/{} episodes, last episode reward: {:.2f}".format(
+                    episode + 1, num_episodes, total_reward))
     
     env.close()
     
@@ -116,9 +201,9 @@ def collect_demonstrations_with_params(env_name: str, pkl_file_path: str,
     
     return demo_data
 
-def format_demonstrations_for_ddpg(episodes: list, env_name: str) -> dict:
+def format_demonstrations_for_ddpg(episodes, env_name):
     """
-    Format collected episodes into the format expected by DDPG.
+    Format collected episodes into the format expected by DDPG for MuJoCo.
     
     Args:
         episodes: List of episode dictionaries
@@ -127,33 +212,43 @@ def format_demonstrations_for_ddpg(episodes: list, env_name: str) -> dict:
     Returns:
         Formatted demonstration data
     """
-    # Convert episodes to batch format
+    # Convert episodes to the format expected by DDPG
     all_obs = []
     all_actions = []
-    all_rewards = []
-    all_info = []
     
     for episode_idx, episode in enumerate(episodes):
+        # For MuJoCo, we need to adapt to the goal-conditioned format
+        # even though we don't have real goals
+        episode_obs = []
+        episode_actions = []
+        
         obs_array = np.array(episode['observations'])
         actions_array = np.array(episode['actions'])
-        rewards_array = np.array(episode['rewards']).reshape(-1, 1)  # Make sure rewards are 2D
         
-        # Create info dictionary (dummy for MuJoCo)
-        info_array = [{'episode': episode_idx, 'step': i} for i in range(len(episode['actions']))]
+        # Create goal-conditioned observations for compatibility
+        for i in range(len(obs_array)):
+            # Create dummy goal-conditioned observation
+            obs_dict = {
+                'observation': obs_array[i],
+                'achieved_goal': np.zeros(1),  # Dummy achieved goal
+                'desired_goal': np.zeros(1)    # Dummy desired goal
+            }
+            episode_obs.append(obs_dict)
         
-        all_obs.append(obs_array)
-        all_actions.append(actions_array)
-        all_rewards.append(rewards_array)
-        all_info.append(info_array)
+        # Actions (exclude last observation since it has no corresponding action)
+        for i in range(len(actions_array)):
+            episode_actions.append(actions_array[i])
+        
+        all_obs.append(episode_obs)
+        all_actions.append(episode_actions)
     
     return {
         'obs': all_obs,
         'acs': all_actions,
-        'rewards': all_rewards,
-        'info': all_info
+        'info': [[{} for _ in range(len(ep_actions))] for ep_actions in all_actions]  # Empty info
     }
 
-def save_demonstrations(demo_data: dict, save_path: str):
+def save_demonstrations(demo_data, save_path):
     """
     Save demonstration data to .npz file format.
     
@@ -172,7 +267,7 @@ def save_demonstrations(demo_data: dict, save_path: str):
             save_dict[key] = value
     
     np.savez_compressed(save_path, **save_dict)
-    print(f"Saved demonstrations to {save_path}")
+    print("Saved demonstrations to {}".format(save_path))
 
 def main():
     """
@@ -235,8 +330,8 @@ def main():
                 demo_data = collect_demonstrations_with_params(
                     env_name, 
                     pkl_path, 
-                    num_episodes=20,  # Smaller number for testing
-                    max_steps=200
+                    num_episodes=50,  # Reasonable number for testing
+                    max_steps=1000    # Full episode length
                 )
                 
                 if demo_data is not None:
@@ -247,9 +342,9 @@ def main():
                 print(f"    Error: {e}")
     
     print(f"\n" + "=" * 50)
-    print(f"Demo generation complete! Generated {generated_count} demonstration files.")
-    print("Note: This is a placeholder implementation using random actions.")
-    print("For actual policy demonstrations, implement proper policy network reconstruction.")
+    print("Demo generation complete! Generated {} demonstration files.".format(generated_count))
+    print("Demonstrations are now ready for use with DDPG + BC loss and Q-filtering!")
+    print("Use them with: python train_mujoco.py --env HalfCheetah-v4 --bc_loss 1 --demo_file demo_data/halfcheetah_expert_demos.npz")
 
 if __name__ == "__main__":
     main()
