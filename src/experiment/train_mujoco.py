@@ -193,7 +193,7 @@ def train(policy, rollout_worker, evaluator,
 
 def launch(
     env, logdir, n_epochs, num_cpu, seed, replay_strategy, policy_save_interval, clip_return, demo_file,
-    bc_loss=None, q_filter=None, num_demo=0, n_cycles=None, n_batches=None, override_params={}, save_policies=True
+    bc_loss=None, q_filter=None, num_demo=None, n_cycles=None, n_batches=None, override_params={}, save_policies=True
 ):
     # Fork for multi-CPU MPI implementation.
     if num_cpu > 1:
@@ -235,10 +235,7 @@ def launch(
     params = config.DEFAULT_MUJOCO_PARAMS.copy()
     params['env_name'] = env
     params['replay_strategy'] = replay_strategy
-    # Add BC and Q-filter parameters
-    params['bc_loss'] = bc_loss
-    params['q_filter'] = q_filter
-    params['num_demo'] = num_demo
+    # BC and Q-filter parameters will use config defaults unless overridden
     if env in config.DEFAULT_MUJOCO_ENV_PARAMS:
         params.update(config.DEFAULT_MUJOCO_ENV_PARAMS[env])  # merge env-specific parameters
     params.update(**override_params)  # makes it possible to override any parameter
@@ -256,6 +253,9 @@ def launch(
     if q_filter is not None:
         params['q_filter'] = q_filter
         print(f"Override: q_filter = {q_filter}")
+    if num_demo is not None:
+        params['num_demo'] = num_demo
+        print(f"Override: num_demo = {num_demo}")
     
     with open(os.path.join(logger.get_dir(), 'params.json'), 'w') as f:
         json.dump(params, f)
@@ -321,6 +321,7 @@ def launch(
 @click.option('--n_batches', type=int, default=None, help='number of training batches per cycle (overrides config default)')
 @click.option('--bc_loss', type=int, default=None, help='whether to use behavior cloning loss (0/1, overrides config default)')
 @click.option('--q_filter', type=int, default=None, help='whether to use Q-value filtering (0/1, overrides config default)')
+@click.option('--num_demo', type=int, default=None, help='number of demonstration episodes to use (overrides config default)')
 def main(**kwargs):
     launch(**kwargs)
 

@@ -38,5 +38,5 @@ junk
 .cache
 
 MUJOCO_LOG.TXT
-
+hprc_logs/
 

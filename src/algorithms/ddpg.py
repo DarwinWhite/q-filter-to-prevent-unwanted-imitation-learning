@@ -96,6 +96,7 @@ class DDPG(object):
                          for key, val in input_shapes.items()}
         buffer_shapes['g'] = (buffer_shapes['g'][0], self.dimg)
         buffer_shapes['ag'] = (self.T+1, self.dimg)
+        buffer_shapes['r'] = (self.T, 1)  # Add reward buffer shape (T timesteps per episode, 1D rewards)
 
         buffer_size = (self.buffer_size // self.rollout_batch_size) * self.rollout_batch_size
         self.buffer = ReplayBuffer(buffer_shapes, buffer_size, self.T, self.sample_transitions)
@@ -152,39 +153,92 @@ class DDPG(object):
 
     def initDemoBuffer(self, demoDataFile, update_stats=True):
 
-        demoData = np.load(demoDataFile)
+        demoData = np.load(demoDataFile, allow_pickle=True)
         info_keys = [key.replace('info_', '') for key in self.input_dims.keys() if key.startswith('info_')]
         info_values = [np.empty((self.T, self.rollout_batch_size, self.input_dims['info_' + key]), np.float32) for key in info_keys]
 
+        print(f"Loading {self.num_demo} demonstration episodes...")
+        
         for epsd in range(self.num_demo):
-            obs, acts, goals, achieved_goals = [], [] ,[] ,[]
-            i = 0
-            for transition in range(self.T):
-                obs.append([demoData['obs'][epsd ][transition].get('observation')])
-                acts.append([demoData['acs'][epsd][transition]])
-                goals.append([demoData['obs'][epsd][transition].get('desired_goal')])
-                achieved_goals.append([demoData['obs'][epsd][transition].get('achieved_goal')])
-                for idx, key in enumerate(info_keys):
-                    info_values[idx][transition, i] = demoData['info'][epsd][transition][key]
+            if epsd % 10 == 0:  # Progress indicator
+                print(f"Loading episode {epsd+1}/{self.num_demo}")
+                
+            # Pre-allocate arrays for efficiency
+            episode_obs = demoData['obs'][epsd]
+            episode_actions = demoData['acs'][epsd]
+            
+            # Create observations: list of arrays with shape (rollout_batch_size, obs_dim)
+            obs = []
+            for ep_obs in episode_obs[:-1]:  # All but last observation
+                obs.append(np.array([ep_obs.get('observation')]))  # Shape: (1, 17)
+            obs.append(np.array([episode_obs[-1].get('observation')]))  # Add final observation
+            
+            # Create actions: list of arrays with shape (rollout_batch_size, action_dim)  
+            acts = []
+            for action in episode_actions:
+                acts.append(np.array([action]))  # Shape: (1, 6)
+            
+            # Create dummy goals: list of arrays with shape (rollout_batch_size, goal_dim)
+            goals = []
+            for ep_obs in episode_obs[:-1]:  # T timesteps for goals
+                goals.append(np.zeros((1, max(1, self.dimg))))  # Shape: (1, 1)
+            
+            # Create dummy achieved goals: list of arrays with shape (rollout_batch_size, goal_dim)
+            achieved_goals = []
+            for ep_obs in episode_obs:  # T+1 timesteps for achieved goals  
+                achieved_goals.append(np.zeros((1, max(1, self.dimg))))  # Shape: (1, 1)
 
-            obs.append([demoData['obs'][epsd][self.T].get('observation')])
-            achieved_goals.append([demoData['obs'][epsd][self.T].get('achieved_goal')])
+            # Handle info keys (usually empty for MuJoCo)
+            for idx, key in enumerate(info_keys):
+                for transition in range(min(self.T, len(episode_actions))):
+                    if transition < len(episode_obs) - 1:
+                        info_values[idx][transition, 0] = demoData['info'][epsd][transition].get(key, 0)
+
+            # Create dummy rewards: list of arrays with shape (rollout_batch_size, 1)
+            rewards = []
+            for _ in range(len(acts)):
+                rewards.append(np.array([[0.0]]))  # Shape: (1, 1) to match rollout format
 
             episode = dict(o=obs,
                            u=acts,
                            g=goals,
-                           ag=achieved_goals)
+                           ag=achieved_goals,
+                           r=rewards)  # Add rewards for buffer compatibility
             for key, value in zip(info_keys, info_values):
                 episode['info_{}'.format(key)] = value
 
-            episode = convert_episode_to_batch_major(episode)
+            # Use the standard conversion function like rollout worker does
+            episode_batch = convert_episode_to_batch_major(episode)
+                
             global demoBuffer
-            demoBuffer.store_episode(episode)
+            demoBuffer.store_episode(episode_batch)
 
-            print("Demo buffer size currently ", demoBuffer.get_current_size())
+            if epsd % 10 == 0:  # Progress indicator
+                print("Demo buffer size currently ", demoBuffer.get_current_size())
 
-            if update_stats:
-                # add transitions to normalizer to normalize the demo data as well
+        print(f"Demo buffer loading complete! Final size: {demoBuffer.get_current_size()}")
+
+        if update_stats:
+            print("Updating normalization statistics...")
+            # Update normalizer stats more efficiently - do it once for all episodes
+            for epsd in range(min(self.num_demo, 10)):  # Limit to 10 episodes for stats to avoid slowdown
+                episode_obs = demoData['obs'][epsd]
+                obs = [[ep_obs.get('observation')] for ep_obs in episode_obs[:-1]]
+                acts = [[action] for action in demoData['acs'][epsd]]
+                goals = [[ep_obs.get('desired_goal')] for ep_obs in episode_obs[:-1]]
+                achieved_goals = [[ep_obs.get('achieved_goal')] for ep_obs in episode_obs[:-1]]
+                
+                obs.append([episode_obs[-1].get('observation')])
+                achieved_goals.append([episode_obs[-1].get('achieved_goal')])
+                
+                # Add dummy rewards for stats computation
+                rewards = [[0.0] for _ in range(len(acts))]
+                
+                episode = dict(o=obs, u=acts, g=goals, ag=achieved_goals, r=rewards)
+                for key, value in zip(info_keys, info_values):
+                    episode['info_{}'.format(key)] = value
+
+                episode = convert_episode_to_batch_major(episode)
                 episode['o_2'] = episode['o'][:, 1:, :]
                 episode['ag_2'] = episode['ag'][:, 1:, :]
                 num_normalizing_transitions = transitions_in_episode_batch(episode)
@@ -192,13 +246,13 @@ class DDPG(object):
 
                 o, o_2, g, ag = transitions['o'], transitions['o_2'], transitions['g'], transitions['ag']
                 transitions['o'], transitions['g'] = self._preprocess_og(o, ag, g)
-                # No need to preprocess the o_2 and g_2 since this is only used for stats
 
                 self.o_stats.update(transitions['o'])
                 self.g_stats.update(transitions['g'])
 
-                self.o_stats.recompute_stats()
-                self.g_stats.recompute_stats()
+            self.o_stats.recompute_stats()
+            self.g_stats.recompute_stats()
+            print("Normalization statistics updated.")
             episode.clear()
 
 
