@@ -16,6 +16,7 @@ experiment/__*
 
 # Virtualenv
 /env
+/pytorch_env
 
 # Generated demo data (exclude from git)
 /demo_data/
@@ -38,5 +39,5 @@ junk
 .cache
 
 MUJOCO_LOG.TXT
-hprc_logs/
+hprc_logs/*
 
