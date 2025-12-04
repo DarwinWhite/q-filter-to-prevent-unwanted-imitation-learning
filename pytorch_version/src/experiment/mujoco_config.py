@@ -1,35 +1,28 @@
-# src/experiment/mujoco_config.py (patched for lazy DDPG imports and TF-free runs)
-import numpy as np
-import gym
-import sys
 import os
+import sys
+import numpy as np
+import gymnasium as gym
 
 # Add project root for portable imports
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
+sys.path.insert(0, project_root)
 
-# Do NOT import DDPG at module import time (it may import TensorFlow).
-# Lazy-import it inside configure_mujoco_ddpg to avoid TF initialization on HPRC.
+from src.algorithms.ddpg import DDPG
+from src.algorithms.ddpg_mujoco import DDPGMuJoCo
 
 # Environment caching for efficiency
 CACHED_ENVS = {}
 
 def cached_make_env(make_env):
-    """
-    Only creates a new environment from the provided function if one has not yet already been
-    created. This is useful here because we need to infer certain properties of the env, e.g.
-    its observation and action spaces, without any intend of actually using it.
-    """
+    """Cache environment to avoid repeated creation."""
     if make_env not in CACHED_ENVS:
-        env = make_env()
-        CACHED_ENVS[make_env] = env
+        CACHED_ENVS[make_env] = make_env()
     return CACHED_ENVS[make_env]
 
 # MuJoCo environment parameters - these are for continuous control with dense rewards
 DEFAULT_MUJOCO_ENV_PARAMS = {
     'HalfCheetah-v4': {
-        'n_cycles': 20,  # Reduced for faster experimentation (was 50)
+        'n_cycles': 20,  # training cycles per epoch
     },
     'Ant-v4': {
         'n_cycles': 20,
@@ -44,299 +37,189 @@ DEFAULT_MUJOCO_ENV_PARAMS = {
 
 # MuJoCo-specific parameters - adapted from original but without goal-conditioning
 DEFAULT_MUJOCO_PARAMS = {
-    # env
+    # Environment
     'max_u': 1.,  # max absolute value of actions on different coordinates
-    # ddpg
+    'T': 1000,  # horizon length (episode length)
+    # Network
     'layers': 3,  # number of layers in the critic/actor networks
     'hidden': 256,  # number of neurons in each hidden layers
-    'network_class': 'baselines.her.actor_critic:ActorCritic',
     'Q_lr': 0.001,  # critic learning rate
     'pi_lr': 0.001,  # actor learning rate
-    'buffer_size': int(1E5),  # for experience replay
-    'polyak': 0.8,  # polyak averaging coefficient
-    'action_l2': 0.1,  # quadratic penalty on actions (before rescaling by max_u)
+    'buffer_size': int(1E6),  # for experience replay
+    'polyak': 0.95,  # polyak averaging coefficient (changed from 0.8)
+    'action_l2': 1.0,  # quadratic penalty on actions (before rescaling by max_u)
     'clip_obs': 200.,
-    'scope': 'ddpg',  # can be tweaked for testing
-    'relative_goals': False,  # Not applicable for MuJoCo - no goals
-    # training
-    'n_cycles': 3,  # per epoch - higher for dense rewards
-    'rollout_batch_size': 1,  # per mpi thread
-    'n_batches': 20,  # training batches per cycle
-    'batch_size': 1024,  # per mpi thread, measured in transitions
-    'n_test_rollouts': 1,  # number of test rollouts per epoch
+    'scope': 'ddpg',
+    'relative_goals': False,
+    # Training
+    'n_cycles': 20,  # per epoch
+    'rollout_batch_size': 1,  # per process
+    'n_batches': 40,  # training batches per cycle  
+    'batch_size': 1024,  # measured in transitions
+    'n_test_rollouts': 10,  # number of test rollouts per epoch
     'test_with_polyak': False,  # run test episodes with the target network
-    # exploration
-    'random_eps': 0.2,  # percentage of time a random action is taken
-    'noise_eps': 0.1,  # std of gaussian noise added to actions as percentage of max_u
-    # HER - disabled for MuJoCo dense reward environments
-    'replay_strategy': 'none',  # No HER needed with dense rewards
-    'replay_k': 0,  # No additional goals for replay
-    # normalization
+    # Exploration
+    'random_eps': 0.3,  # percentage of time a random action is taken
+    'noise_eps': 0.2,  # std of gaussian noise added to not-completely-random actions
+    # HER (disabled for MuJoCo dense rewards)
+    'replay_strategy': 'none',  # no HER for dense reward environments
+    'replay_k': 0,  # no additional goals
+    # Normalization
     'norm_eps': 0.01,  # epsilon used for observation normalization
     'norm_clip': 5,  # normalized observations are cropped to this values
-    'bc_loss': 0,  # disabled for basic MuJoCo training (enable with demo data)
-    'q_filter': 0,  # disabled for basic MuJoCo training (enable with demo data)
-    'num_demo': 0  # no demos for basic MuJoCo training
+    # Q-filter and demonstrations
+    'bc_loss': 0,  # whether to use behavior cloning loss
+    'q_filter': 0,  # whether to use q-filter
+    'num_demo': 100,  # number of expert demo episodes
+    'demo_batch_size': 128,  # number of demo samples per batch
+    'prm_loss_weight': 0.001,  # weight for demo loss
+    'aux_loss_weight': 0.0078,  # weight for auxiliary losses
+    # PyTorch specific
+    'device': 'cpu',  # PyTorch device
+    'gamma': 0.99,  # discount factor for MuJoCo
 }
 
-CACHED_MUJOCO_ENVS = {}
-
-def cached_make_mujoco_env(make_env):
-    """
-    Only creates a new environment from the provided function if one has not yet already been
-    created. This is useful here because we need to infer certain properties of the env, e.g.
-    its observation and action spaces, without any intend of actually using it.
-    """
-    if make_env not in CACHED_MUJOCO_ENVS:
-        env = make_env()
-        CACHED_MUJOCO_ENVS[make_env] = env
-    return CACHED_MUJOCO_ENVS[make_env]
-
-def prepare_mujoco_params(kwargs):
-    """
-    Prepare parameters for MuJoCo environments - adapted from original prepare_params
-    but simplified for flat state observations (no goal conditioning)
-    """
-    # DDPG params
-    ddpg_params = dict()
-
-    env_name = kwargs['env_name']
-
-    def make_env():
-        return gym.make(env_name)
-    
-    kwargs['make_env'] = make_env
-    tmp_env = cached_make_mujoco_env(kwargs['make_env'])
-    
-    assert hasattr(tmp_env, '_max_episode_steps')
-    kwargs['T'] = tmp_env._max_episode_steps
-    
-    # Reset to get observation and action space info
-    tmp_env.reset()
-    
-    kwargs['max_u'] = np.array(kwargs['max_u']) if isinstance(kwargs['max_u'], list) else kwargs['max_u']
-    kwargs['gamma'] = 1. - 1. / kwargs['T']
-    
-    if 'lr' in kwargs:
-        kwargs['pi_lr'] = kwargs['lr']
-        kwargs['Q_lr'] = kwargs['lr']
-        del kwargs['lr']
-    
-    # Extract DDPG parameters
-    for name in ['buffer_size', 'hidden', 'layers',
-                 'network_class',
-                 'polyak',
-                 'batch_size', 'Q_lr', 'pi_lr',
-                 'norm_eps', 'norm_clip', 'max_u',
-                 'action_l2', 'clip_obs', 'scope', 'relative_goals']:
-        ddpg_params[name] = kwargs[name]
-        kwargs['_' + name] = kwargs[name]
-        del kwargs[name]
-    
-    kwargs['ddpg_params'] = ddpg_params
-
-    return kwargs
 
 def configure_mujoco_dims(params):
-    """
-    Configure dimensions for MuJoCo environments - flat state observations only
-    No goals or achieved_goals like the original goal-conditioned version
-    """
-    env = cached_make_mujoco_env(params['make_env'])
+    """Configure dimensions for MuJoCo environments (flat state observations)."""
+    env = cached_make_env(params['make_env'])
     
-    # Handle both old and new gym API
-    obs_result = env.reset()
-    if isinstance(obs_result, tuple):
-        obs, info = obs_result  # New gym API
-    else:
-        obs = obs_result  # Old gym API
-    
-    # For MuJoCo environments, obs is directly the observation array (flat state)
-    # Not a dictionary like {'observation': ..., 'achieved_goal': ..., 'desired_goal': ...}
+    # Reset to get observation dimensions
+    obs = env.reset()
+    if isinstance(obs, tuple):
+        obs = obs[0]  # Handle new Gymnasium API
+
+    # MuJoCo environments return flat observations directly
+    if isinstance(obs, dict):
+        raise ValueError(f"Expected flat observations for MuJoCo, got dict: {obs.keys()}")
     
     dims = {
-        'o': obs.shape[0],  # observation dimension (e.g., 17 for HalfCheetah-v4)
-        'u': env.action_space.shape[0],  # action dimension (e.g., 6 for HalfCheetah-v4)
-        'g': 0,  # No goals in MuJoCo - set to 0
-        'r': 1,  # Reward dimension (scalar reward)
+        'o': obs.shape[0],
+        'u': env.action_space.shape[0],
+        'g': 1,  # Minimal goal dimension for compatibility with goal-conditioned DDPG
+        'info': 0,  # No additional info
     }
     
-    # Note: No info handling needed for basic MuJoCo environments
-    # They don't return structured info like goal-conditioned environments
+    # Set episode length for continuous control
+    params['T'] = getattr(env, '_max_episode_steps', 1000)
     
     return dims
 
-def simple_mujoco_sample_transitions(episode_batch, batch_size_in_transitions):
-    """
-    Simple transition sampler for MuJoCo (no HER).
-    Just extracts all transitions from the episode batch.
-    """
-    T = episode_batch['u'].shape[1]
-    rollout_batch_size = episode_batch['u'].shape[0]
-    
-    # Extract transitions in batch format 
-    transitions = {}
-    for key in episode_batch.keys():
-        if key == 'o':
-            # Split observations into o and o_2 (current and next state)
-            transitions['o'] = episode_batch[key][:, :-1].reshape(-1, *episode_batch[key].shape[2:])
-            transitions['o_2'] = episode_batch[key][:, 1:].reshape(-1, *episode_batch[key].shape[2:])
-        elif key == 'ag':
-            # Split achieved goals into ag and ag_2
-            transitions['ag'] = episode_batch[key][:, :-1].reshape(-1, *episode_batch[key].shape[2:])
-            transitions['ag_2'] = episode_batch[key][:, 1:].reshape(-1, *episode_batch[key].shape[2:])
-        elif key in ['u', 'r', 'g']:
-            # Actions, rewards, and goals have T timesteps (not T+1)
-            transitions[key] = episode_batch[key].reshape(-1, *episode_batch[key].shape[2:])
-        elif key in ['o_2', 'ag_2']:
-            # Skip these - they're created by the replay buffer
-            pass
-    
-    return transitions
 
-def simple_mujoco_subtract(a, b):
-    """Dummy subtract function for MuJoCo (goals not used)"""
-    return a - b
-
-def sample_her_transitions():
-    """Function that creates the appropriate HER sampler"""
-    # For MuJoCo without HER, return a simple transition sampler
-    return simple_mujoco_sample_transitions
-
-# Configure MuJoCo-specific parameters  
-def prepare_mujoco_params(kwargs):
-    """
-    Prepare parameters for MuJoCo environment training.
-    """
-    # Basic environment setup
-    env_name = kwargs['env_name']
-
-    def make_env():
-        return gym.make(env_name)
+def prepare_mujoco_params(env_name, **kwargs):
+    """Prepare parameters for MuJoCo environments."""
+    # Start with MuJoCo defaults
+    params = DEFAULT_MUJOCO_PARAMS.copy()
     
-    kwargs['make_env'] = make_env
-    tmp_env = cached_make_env(kwargs['make_env'])
-    assert hasattr(tmp_env, '_max_episode_steps')
-    kwargs['T'] = tmp_env._max_episode_steps
-    tmp_env.reset()
+    # Add environment-specific parameters
+    if env_name in DEFAULT_MUJOCO_ENV_PARAMS:
+        params.update(DEFAULT_MUJOCO_ENV_PARAMS[env_name])
     
-    # Compute gamma based on episode length
-    kwargs['gamma'] = 1. - 1. / kwargs['T']
+    # Add environment name and factory function
+    params['env_name'] = env_name
     
-    # Get observation and action dimensions for MuJoCo  
-    obs_dims = tmp_env.observation_space.shape[0]
-    action_dims = tmp_env.action_space.shape[0]
+    # Create environment factory with optional render mode
+    def make_env_with_render(render_mode=None):
+        import warnings
+        # Suppress GLFW and rendering warnings
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=DeprecationWarning)
+            warnings.filterwarnings("ignore", message=".*GLFW.*")
+            if render_mode:
+                env = gym.make(env_name, render_mode=render_mode)
+            else:
+                env = gym.make(env_name)
+        return env
     
-    # MuJoCo environments don't use goals, so set goal dimension to 0
-    kwargs['goal_dim'] = 0
+    params['make_env'] = make_env_with_render
     
-    return kwargs
+    # Override with any provided parameters
+    params.update(kwargs)
+    
+    return params
 
-def configure_mujoco_ddpg(dims, params, reuse=False, use_mpi=True, clip_return=True):
-    """
-    Configure DDPG for MuJoCo environments - no HER since we have dense rewards
-    """
-    # Lazy import: prefer a PyTorch DDPG implementation if present, otherwise try TF one.
-    # This avoids importing TensorFlow at module import time (which fails on HPRC).
-    ddpg_impl = None
-    ddpg_module_names_tried = []
-    try:
-        # Preferred name for a PyTorch implementation (you can create this file)
-        ddpg_module_names_tried.append("src.algorithms.ddpg_torch")
-        ddpg_impl_mod = __import__("src.algorithms.ddpg_torch", fromlist=["DDPG"])
-        ddpg_impl = getattr(ddpg_impl_mod, "DDPG")
-    except Exception:
-        # fallback: try the legacy ddpg (may import TF and fail)
-        try:
-            ddpg_module_names_tried.append("src.algorithms.ddpg")
-            ddpg_impl_mod = __import__("src.algorithms.ddpg", fromlist=["DDPG"])
-            ddpg_impl = getattr(ddpg_impl_mod, "DDPG")
-        except Exception as e:
-            msg = ("Could not import a DDPG implementation. "
-                   "Tried modules: {}. Import error: {}. \n\n"
-                   "If you have a PyTorch DDPG implementation, place it at "
-                   "'src/algorithms/ddpg_torch.py' exposing class DDPG. "
-                   "If you only have the old TensorFlow-based DDPG, it will fail on this system "
-                   "because TensorFlow and protobuf are not compatible with the current environment. "
-                   "Please install a PyTorch DDPG or ensure TensorFlow/protobuf compatibility.")
-            raise ImportError(msg.format(ddpg_module_names_tried, e))
 
-    # Extract relevant parameters
-    gamma = params['gamma']
-    rollout_batch_size = params['rollout_batch_size']
-    ddpg_params = {}
-    for key in ['buffer_size', 'hidden', 'layers', 'network_class', 'polyak',
-                'batch_size', 'Q_lr', 'pi_lr', 'norm_eps', 'norm_clip', 'max_u',
-                'action_l2', 'clip_obs', 'scope', 'relative_goals']:
+def configure_mujoco_ddpg(dims, params):
+    """Configure DDPG for MuJoCo environments."""
+    from src.algorithms.her import make_sample_her_transitions
+    
+    # Simple reward function for dense rewards (no HER)
+    def mujoco_reward_fun(ag_2, g, info):
+        # For MuJoCo, rewards come from environment - return zeros for HER compatibility
+        return np.zeros((ag_2.shape[0], 1))
+    
+    # Configure HER (disabled for MuJoCo)
+    sample_her_transitions = make_sample_her_transitions(
+        params['replay_strategy'], 
+        params['replay_k'], 
+        mujoco_reward_fun
+    )
+    
+    # Prepare DDPG parameters (don't include input_dims here since it's passed separately)
+    ddpg_params = {
+        'T': params['T'],
+        'clip_pos_returns': True,
+        'clip_return': (1. / (1. - params['gamma'])) if params['gamma'] < 1. else np.inf,
+        'subtract_goals': lambda x, y: x - y,  # Simple subtraction for dummy goals
+        'sample_transitions': sample_her_transitions,
+        'rollout_batch_size': params['rollout_batch_size'],
+    }
+    
+    # Add all relevant DDPG parameters
+    ddpg_keys = ['buffer_size', 'hidden', 'layers', 'polyak', 'batch_size', 'Q_lr', 'pi_lr',
+                 'norm_eps', 'norm_clip', 'max_u', 'action_l2', 'clip_obs', 'scope',
+                 'relative_goals', 'bc_loss', 'q_filter', 'num_demo', 'demo_batch_size',
+                 'prm_loss_weight', 'aux_loss_weight', 'device', 'gamma']
+    
+    for key in ddpg_keys:
         if key in params:
             ddpg_params[key] = params[key]
+    
+    return ddpg_params
 
-    input_dims = dims.copy()
 
-    # DDPG agent configuration (the constructor signature expected mirrors the
-    # previous configure_mujoco_ddpg usage; adjust your ddpg_torch.DDPG to accept these)
-    ddpg_params.update({
-        'input_dims': input_dims,  # agent takes flat state observations
-        'T': params['T'],
-        'clip_pos_returns': True,  # clip positive returns
-        'clip_return': (1. / (1. - gamma)) if clip_return else np.inf,  # max abs of return
-        'rollout_batch_size': rollout_batch_size,
-        'subtract_goals': simple_mujoco_subtract,
-        'sample_transitions': simple_mujoco_sample_transitions,
-        'gamma': gamma,
-        'bc_loss': params.get('bc_loss', 0),
-        'q_filter': params.get('q_filter', 0),
-        'num_demo': params.get('num_demo', 0),
-    })
-
-    ddpg_params['info'] = {'env_name': params.get('env_name', 'unknown')}
-
-    # Create policy instance using the discovered implementation
-    policy = ddpg_impl(**ddpg_params, use_mpi=use_mpi)
+def create_mujoco_ddpg(dims, params):
+    """Create DDPG instance for MuJoCo environments."""
+    ddpg_params = configure_mujoco_ddpg(dims, params)
+    
+    # Use MuJoCo adapter to handle flat state observations
+    policy = DDPGMuJoCo(input_dims=dims, **ddpg_params)
+    
     return policy
 
+
 def log_mujoco_params(params, logger=None):
-    """Log MuJoCo parameters"""
+    """Log MuJoCo parameters."""
     if logger is None:
-        # fallback to simple print
+        print("MuJoCo DDPG Parameters:")
         for key in sorted(params.keys()):
-            print(f'{key}: {params[key]}')
+            if not callable(params[key]):  # Skip function objects
+                print(f'  {key}: {params[key]}')
     else:
+        logger.info("MuJoCo DDPG Parameters:")
         for key in sorted(params.keys()):
-            try:
-                logger.info('{}: {}'.format(key, params[key]))
-            except Exception:
-                pass
+            if not callable(params[key]):  # Skip function objects
+                logger.info(f'{key}: {params[key]}')
 
-# Environment-specific configurations (unchanged)
-HALFCHEETAH_CONFIG = {
-    'env_name': 'HalfCheetah-v4',
-    'observation_dim': 17,  # HalfCheetah state space
-    'action_dim': 6,        # HalfCheetah action space
-    'max_episode_steps': 1000,
-    'reward_type': 'dense',  # MuJoCo provides dense rewards
+
+# Environment dimension mapping for quick reference
+MUJOCO_ENV_DIMS = {
+    'HalfCheetah-v4': {'obs': 17, 'action': 6},
+    'Hopper-v4': {'obs': 11, 'action': 3},
+    'Walker2d-v4': {'obs': 17, 'action': 6},
+    'Ant-v4': {'obs': 27, 'action': 8},
+    'Humanoid-v4': {'obs': 376, 'action': 17},
 }
 
-ANT_CONFIG = {
-    'env_name': 'Ant-v4',
-    'observation_dim': 27,  # Ant state space
-    'action_dim': 8,        # Ant action space
-    'max_episode_steps': 1000,
-    'reward_type': 'dense',
-}
 
-HOPPER_CONFIG = {
-    'env_name': 'Hopper-v4',
-    'observation_dim': 11,  # Hopper state space
-    'action_dim': 3,        # Hopper action space
-    'max_episode_steps': 1000,
-    'reward_type': 'dense',
-}
-
-WALKER2D_CONFIG = {
-    'env_name': 'Walker2d-v4',
-    'observation_dim': 17,  # Walker2d state space
-    'action_dim': 6,        # Walker2d action space
-    'max_episode_steps': 1000,
-    'reward_type': 'dense',
-}
+def get_mujoco_dims(env_name):
+    """Get dimensions for common MuJoCo environments."""
+    if env_name in MUJOCO_ENV_DIMS:
+        return MUJOCO_ENV_DIMS[env_name]
+    else:
+        # Query environment directly if not in predefined list
+        env = gym.make(env_name)
+        obs = env.reset()
+        if isinstance(obs, tuple):
+            obs = obs[0]
+        return {'obs': obs.shape[0], 'action': env.action_space.shape[0]}

@@ -1,189 +1,172 @@
-"""
-A lightweight, NumPy-only normalizer suitable for single-process PyTorch training.
-
-This file purposefully avoids importing mpi4py or tensorflow at module import time
-so it does not trigger MPI initialization (which caused the PMPI_Init_thread abort).
-It implements the same external API used by the rest of the codebase:
-- Normalizer(size, eps=..., default_clip_range=..., sess=None)
-- IdentityNormalizer(size, std=1.)
-"""
-
-import threading
+import torch
 import numpy as np
-import warnings
-import os
 
-# Try to detect mpi4py only when explicitly asked; do NOT import it at module import time.
-_MPI_AVAILABLE = False
-_MPI = None
-try:
-    # Only attempt to import if user explicitly requested MPI via env var; otherwise skip.
-    if os.environ.get("USE_MPI", "0") == "1":
-        import mpi4py  # type: ignore
-        from mpi4py import MPI  # type: ignore
-        _MPI_AVAILABLE = True
-        _MPI = MPI
-except Exception:
-    # Don't fail import — we deliberately avoid MPI in the default single-process case.
-    _MPI_AVAILABLE = False
-    _MPI = None
+
+def reshape_for_broadcasting(source, target):
+    """Reshape source tensor to be compatible with target tensor for broadcasting."""
+    if isinstance(source, torch.Tensor):
+        source_shape = list(source.shape)
+    else:
+        source_shape = list(np.array(source).shape)
+    
+    if isinstance(target, torch.Tensor):
+        target_shape = list(target.shape)
+    else:
+        target_shape = list(np.array(target).shape)
+    
+    # If they're already compatible, return as-is
+    if len(source_shape) == len(target_shape):
+        return source
+    
+    # Add dimensions to match target
+    while len(source_shape) < len(target_shape):
+        source_shape = [1] + source_shape
+    
+    if isinstance(source, torch.Tensor):
+        return source.reshape(source_shape)
+    else:
+        return np.reshape(source, source_shape)
 
 
 class Normalizer:
-    """
-    NumPy-based normalizer:
-      - Collects local sums / sumsqs / counts via update()
-      - recompute_stats() computes mean/std from accumulated local values
-      - synchronize() is a best-effort collective that only runs if mpi4py was intentionally enabled
-    """
+    def __init__(self, size, eps=1e-2, default_clip_range=np.inf, device='cpu'):
+        """A normalizer that ensures that observations are approximately distributed according to
+        a standard Normal distribution (i.e. have mean zero and variance one).
 
-    def __init__(self, size, eps=1e-2, default_clip_range=np.inf, sess=None):
-        self.size = int(size)
-        self.eps = float(eps)
+        Args:
+            size (int): the size of the observation to be normalized
+            eps (float): a small constant that avoids underflows
+            default_clip_range (float): normalized observations are clipped to be in
+                [-default_clip_range, default_clip_range]
+            device (str): PyTorch device ('cpu' or 'cuda')
+        """
+        self.size = size
+        self.eps = eps
         self.default_clip_range = default_clip_range
+        self.device = torch.device(device)
 
-        # Local (accumulating) stats
-        self.local_sum = np.zeros(self.size, dtype=np.float64)
-        self.local_sumsq = np.zeros(self.size, dtype=np.float64)
-        self.local_count = np.zeros(1, dtype=np.float64)
+        # Use PyTorch tensors instead of TensorFlow variables
+        self.local_sum = torch.zeros(self.size, dtype=torch.float32, device=self.device)
+        self.local_sumsq = torch.zeros(self.size, dtype=torch.float32, device=self.device)
+        self.local_count = torch.zeros(1, dtype=torch.float32, device=self.device)
 
-        # Global (exposed) stats (kept as float64 for numeric stability)
-        self.mean = np.zeros(self.size, dtype=np.float64)
-        self.std = np.ones(self.size, dtype=np.float64)
+        # Running statistics (no MPI synchronization needed)
+        self.sum = torch.zeros(self.size, dtype=torch.float32, device=self.device)
+        self.sumsq = torch.zeros(self.size, dtype=torch.float32, device=self.device)
+        self.count = torch.zeros(1, dtype=torch.float32, device=self.device)
 
-        # Thread lock for update/recompute
-        self.lock = threading.Lock()
-
-    def __getstate__(self):
-        """
-        Make Normalizer pickle/deepcopy-safe:
-        Remove the unpicklable lock from state and store a flag so we can
-        recreate it when unpickling.
-        """
-        state = self.__dict__.copy()
-        # Remove the lock (cannot be pickled)
-        lock_present = 'lock' in state
-        state.pop('lock', None)
-        # keep a flag so __setstate__ knows to recreate it
-        state['_had_lock'] = bool(lock_present)
-        return state
-
-    def __setstate__(self, state):
-        """
-        Restore state after unpickling/deepcopy and recreate the lock.
-        """
-        had_lock = state.pop('_had_lock', True)
-        self.__dict__.update(state)
-        # Recreate the lock (always create one for safety)
-        self.lock = threading.Lock() if had_lock else threading.Lock()
+        # Computed statistics
+        self.mean = torch.zeros(self.size, dtype=torch.float32, device=self.device)
+        self.std = torch.ones(self.size, dtype=torch.float32, device=self.device)
 
     def update(self, v):
-        """v should be shaped (-1, size)"""
-        arr = np.asarray(v, dtype=np.float64).reshape(-1, self.size)
-        with self.lock:
-            self.local_sum += arr.sum(axis=0)
-            self.local_sumsq += (arr ** 2).sum(axis=0)
-            self.local_count[0] += arr.shape[0]
+        """Update the normalizer with a batch of observations."""
+        if isinstance(v, np.ndarray):
+            v = torch.from_numpy(v).float().to(self.device)
+        elif not isinstance(v, torch.Tensor):
+            v = torch.tensor(v, dtype=torch.float32, device=self.device)
 
-    def _mpi_average(self, x):
-        """Perform an Allreduce if MPI was intentionally enabled; otherwise return local x."""
-        if not _MPI_AVAILABLE:
-            # single-process: just return x unchanged
-            return x.copy()
-        try:
-            buf = np.zeros_like(x)
-            _MPI.COMM_WORLD.Allreduce(x, buf, op=_MPI.SUM)
-            buf = buf / _MPI.COMM_WORLD.Get_size()
-            return buf
-        except Exception as e:
-            warnings.warn(f"MPI Allreduce failed in Normalizer._mpi_average: {e}")
-            return x.copy()
+        # Handle single observation
+        if v.dim() == 1:
+            v = v.unsqueeze(0)
 
-    def synchronize(self, local_sum, local_sumsq, local_count, root=None):
-        """If MPI enabled, average across ranks. Otherwise return inputs unchanged."""
-        if _MPI_AVAILABLE:
-            s = self._mpi_average(local_sum)
-            ssq = self._mpi_average(local_sumsq)
-            cnt = self._mpi_average(local_count)
-            return s, ssq, cnt
-        else:
-            return local_sum, local_sumsq, local_count
-
-    def recompute_stats(self):
-        """Apply accumulated local stats to compute mean/std and reset local accumulators."""
-        with self.lock:
-            local_sum = self.local_sum.copy()
-            local_sumsq = self.local_sumsq.copy()
-            local_count = self.local_count.copy()
-            # reset local accumulators
-            self.local_sum[...] = 0.0
-            self.local_sumsq[...] = 0.0
-            self.local_count[...] = 0.0
-
-        # If MPI is active, average across procs; otherwise just use local values.
-        synced_sum, synced_sumsq, synced_count = self.synchronize(local_sum, local_sumsq, local_count)
-
-        # Avoid division by zero
-        cnt = float(synced_count[0]) if isinstance(synced_count, (list, np.ndarray)) else float(synced_count)
-        if cnt <= 0:
-            # nothing to update
-            return
-
-        mean = synced_sum / cnt
-        var = (synced_sumsq / cnt) - (mean ** 2)
-        var = np.maximum(var, self.eps ** 2)
-        std = np.sqrt(var)
-
-        # Update public stats
-        self.mean = mean.astype(np.float64)
-        self.std = std.astype(np.float64)
+        # Update local statistics
+        self.local_sum += torch.sum(v, dim=0)
+        self.local_sumsq += torch.sum(v ** 2, dim=0)
+        self.local_count += v.shape[0]
 
     def normalize(self, v, clip_range=None):
-        """Normalize a numpy array (returns numpy array). clip_range defaults to default_clip_range."""
+        """Normalize observations using current statistics."""
+        if isinstance(v, np.ndarray):
+            v_tensor = torch.from_numpy(v).float().to(self.device)
+            return_numpy = True
+        else:
+            v_tensor = v.float().to(self.device)
+            return_numpy = False
+
         if clip_range is None:
             clip_range = self.default_clip_range
-        arr = np.asarray(v, dtype=np.float64)
-        # broadcast mean/std
-        mean = self.mean
-        std = self.std
-        # Avoid divide by zero
-        std_safe = np.where(std == 0, 1.0, std)
-        normed = (arr - mean) / std_safe
-        if clip_range is not None and np.isfinite(clip_range):
-            normed = np.clip(normed, -clip_range, clip_range)
-        return normed
+
+        # Normalize
+        normalized = (v_tensor - self.mean) / self.std
+        
+        # Clip
+        if clip_range != np.inf:
+            normalized = torch.clamp(normalized, -clip_range, clip_range)
+
+        if return_numpy:
+            return normalized.cpu().numpy()
+        else:
+            return normalized
 
     def denormalize(self, v):
-        arr = np.asarray(v, dtype=np.float64)
-        return self.mean + arr * self.std
+        """Denormalize observations."""
+        if isinstance(v, np.ndarray):
+            v_tensor = torch.from_numpy(v).float().to(self.device)
+            return_numpy = True
+        else:
+            v_tensor = v.float().to(self.device)
+            return_numpy = False
+
+        denormalized = v_tensor * self.std + self.mean
+
+        if return_numpy:
+            return denormalized.cpu().numpy()
+        else:
+            return denormalized
+
+    def synchronize(self, local_sum=None, local_sumsq=None, local_count=None, root=None):
+        """Synchronize statistics (simplified - no MPI in PyTorch version)."""
+        if local_sum is not None:
+            self.local_sum = torch.from_numpy(local_sum).float().to(self.device)
+        if local_sumsq is not None:
+            self.local_sumsq = torch.from_numpy(local_sumsq).float().to(self.device)
+        if local_count is not None:
+            self.local_count = torch.tensor(local_count, dtype=torch.float32, device=self.device)
+
+        # Update global statistics (no MPI averaging)
+        self.sum = self.local_sum.clone()
+        self.sumsq = self.local_sumsq.clone()
+        self.count = self.local_count.clone()
+
+        self.recompute_stats()
+
+    def recompute_stats(self):
+        """Recompute mean and std from current statistics."""
+        # Avoid division by zero
+        count = torch.max(self.count, torch.tensor(1.0, device=self.device))
+        
+        self.mean = self.sum / count
+        variance = (self.sumsq / count) - (self.mean ** 2)
+        
+        # Ensure variance is positive
+        variance = torch.clamp(variance, min=self.eps)
+        self.std = torch.sqrt(variance)
 
 
 class IdentityNormalizer:
-    def __init__(self, size, std=1.):
-        self.size = int(size)
-        self.mean = np.zeros(self.size, dtype=np.float64)
-        self.std = float(std) * np.ones(self.size, dtype=np.float64)
-
-    def __getstate__(self):
-        """Make IdentityNormalizer pickle-safe (no lock present but keep consistent API)."""
-        return self.__dict__.copy()
-
-    def __setstate__(self, state):
-        self.__dict__.update(state)
+    def __init__(self, size, std=1., device='cpu'):
+        """A normalizer that does nothing (identity transform)."""
+        self.size = size
+        self.std_val = std
+        self.device = torch.device(device)
 
     def update(self, x):
-        return
+        """No-op for identity normalizer."""
+        pass
 
     def normalize(self, x, clip_range=None):
-        x = np.asarray(x, dtype=np.float64)
-        return x / self.std
+        """Return input unchanged."""
+        return x
 
     def denormalize(self, x):
-        x = np.asarray(x, dtype=np.float64)
-        return x * self.std
+        """Return input unchanged."""
+        return x
 
     def synchronize(self):
-        return
+        """No-op for identity normalizer."""
+        pass
 
     def recompute_stats(self):
-        return
+        """No-op for identity normalizer."""
+        pass

@@ -1,526 +1,489 @@
-# src/algorithms/ddpg.py
-import os
-import json
-import math
-import copy
-from collections import OrderedDict
-from typing import Optional
-
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.nn.functional as F
+import numpy as np
+import pickle
+from collections import OrderedDict
 
-from src.utils.util import store_args
+from src.utils.util import (store_args, to_tensor, to_numpy, polyak_update, hard_update, 
+                           convert_episode_to_batch_major)
 from src.utils.normalizer import Normalizer
 from src.algorithms.replay_buffer import ReplayBuffer
-from src.algorithms.actor_critic import ActorCritic
-
-
-def to_numpy(x):
-    if isinstance(x, torch.Tensor):
-        return x.detach().cpu().numpy()
-    return np.asarray(x)
-
-
-class DDPG:
-    """
-    Clean, corrected, production-ready PyTorch DDPG
-    suitable for MuJoCo dense-reward tasks.
-    """
-
-    @store_args
-    def __init__(
-        self,
-        input_dims,
-        buffer_size=int(1e6),
-        hidden=256,
-        layers=3,
-        network_class=None,
-        polyak=0.995,
-        batch_size=256,
-        Q_lr=1e-3,
-        pi_lr=1e-3,
-        norm_eps=1e-2,
-        norm_clip=5.0,
-        max_u=1.0,
-        action_l2=0.1,
-        clip_obs=200.0,
-        scope='ddpg',
-        T=1000,
-        rollout_batch_size=1,
-        subtract_goals=None,
-        relative_goals=False,
-        clip_pos_returns=True,
-        clip_return=None,
-        bc_loss=0,
-        q_filter=0,
-        num_demo=0,
-        sample_transitions=None,
-        gamma=0.99,
-        device='cpu',
-        demo_batch_size=128,
-        lambda1=0.001,
-        lambda2=0.0078,
-        l2_reg_coeff=0.005,
-        **kwargs
-    ):
-        self.device = torch.device(device)
-
-        # dims
-        self.input_dims = input_dims
-        self.dimo  = int(input_dims["o"])
-        self.dimu  = int(input_dims["u"])
-        self.dimg  = int(input_dims.get("g", 0))
-
-        # settings
-        self.max_u = float(max_u)
-        self.batch_size = int(batch_size)
-        self.gamma = float(gamma)
-        self.bc_loss = int(bc_loss)
-        self.q_filter = int(q_filter)
-        self.num_demo = int(num_demo)
-        self.demo_batch_size = int(demo_batch_size)
-        self.lambda2 = float(lambda2)
-        self.T = int(T)
-        self.clip_return = float(clip_return) if clip_return is not None else np.inf
-
-        # normalizers
-        self.o_stats = Normalizer(self.dimo, eps=norm_eps, default_clip_range=norm_clip)
-        self.g_stats = Normalizer(max(1, self.dimg), eps=norm_eps, default_clip_range=norm_clip)
-
-        # replay buffers
-        size_in_transitions = int(buffer_size)
-
-        buffer_shapes = {
-            "o":  (self.T+1, self.dimo),
-            "u":  (self.T,   self.dimu),
-            "r":  (self.T,   1),
-            "g":  (self.T,   max(1,self.dimg)),
-            "ag": (self.T+1, max(1,self.dimg)),
-        }
-
-        self.buffer = ReplayBuffer(buffer_shapes, size_in_transitions, self.T, sample_transitions or (lambda x,n: x))
-        self.demo_buffer = ReplayBuffer(buffer_shapes, size_in_transitions, self.T, sample_transitions or (lambda x,n: x))
-        self.demo_loaded = False
-
-        # networks
-        ac_kwargs = dict(
-            dimo=self.dimo,
-            dimg=max(1, self.dimg),
-            dimu=self.dimu,
-            hidden=hidden,
-            layers=layers,
-            max_u=self.max_u,
-            o_stats=self.o_stats,
-            g_stats=self.g_stats,
-        )
-
-        self.main = ActorCritic(**ac_kwargs).to(self.device)
-        self.target = copy.deepcopy(self.main).to(self.device)
-        self.target.eval()
-
-        # optimizers
-        self.Q_optimizer = optim.Adam(self.main.critic.parameters(), lr=Q_lr)
-        self.pi_optimizer = optim.Adam(self.main.actor.parameters(), lr=pi_lr)
-
-        # logs
-        self._last_critic_loss = 0
-        self._last_actor_loss = 0
-        self._last_cloning_loss = 0
-        self.total_steps = 0
-
-
-    # ------------ helpers ------------
-    def _to_tensor(self, x):
-        if isinstance(x, torch.Tensor):
-            return x.to(self.device, dtype=torch.float32)
-        return torch.tensor(x, dtype=torch.float32, device=self.device)
-
-    def _preprocess_obs(self, o):
-        return np.clip(o, -self.clip_obs, self.clip_obs)
-
-
-    # ------------ exposed to rollout worker ------------
-    def get_actions(self, o, ag=None, g=None, noise_eps=0., random_eps=0., use_target_net=False, compute_Q=False):
-        """
-        o: numpy (batch, obs_dim)
-        returns numpy action
-        """
-        o = self._preprocess_obs(o)
-        o_t = self._to_tensor(o.reshape(-1, self.dimo))
-
-        # dummy goal
-        g_t = torch.zeros((o_t.shape[0], max(1,self.dimg)), device=self.device)
-
-        net = self.target if use_target_net else self.main
-
-        with torch.no_grad():
-            pi = net.pi(o_t, g_t)                    # tensor
-            Q_pi = net.Q(o_t, g_t, pi) if compute_Q else None
-
-        a = to_numpy(pi)
-
-        # noise
-        if noise_eps > 0:
-            a += noise_eps * self.max_u * np.random.randn(*a.shape)
-
-        # random eps
-        if random_eps > 0:
-            mask = (np.random.rand(a.shape[0]) < random_eps)
-            if mask.any():
-                rnd = np.random.uniform(-self.max_u, self.max_u, size=a.shape)
-                a[mask] = rnd[mask]
-
-        a = np.clip(a, -self.max_u, self.max_u)
-
-        if a.shape[0] == 1:
-            a = a[0]
-
-        if compute_Q:
-            return a, to_numpy(Q_pi).reshape(-1)
-        return a
-
-
-    # ------------ demo buffer ------------
-    def initDemoBuffer(self, demo_file: str, update_stats=True):
-        data = np.load(demo_file, allow_pickle=True)
-        obs_all = data["obs"]
-        acs_all = data["acs"]
-
-        stored = 0
-        for i in range(len(obs_all)):
-            o_ep = np.asarray(obs_all[i], dtype=np.float32)
-            u_ep = np.asarray(acs_all[i], dtype=np.float32)
-
-            if o_ep.ndim != 2: continue
-            T_eps = min(self.T, o_ep.shape[0]-1, u_ep.shape[0])
-            if T_eps <= 0: continue
-
-            o = np.zeros((1,self.T+1,self.dimo), np.float32)
-            u = np.zeros((1,self.T,  self.dimu), np.float32)
-            r = np.zeros((1,self.T,1),           np.float32)
-
-            o[0,:T_eps+1] = o_ep[:T_eps+1,:self.dimo]
-            u[0,:T_eps]   = u_ep[:T_eps,:self.dimu]
-            o[0,T_eps+1:] = o[0,T_eps]
-
-            ep = dict(o=o, u=u, r=r,
-                      g=np.zeros((1,self.T,max(1,self.dimg)),np.float32),
-                      ag=np.zeros((1,self.T+1,max(1,self.dimg)),np.float32))
-
-            self.demo_buffer.store_episode(ep)
-            stored += 1
-
-        self.demo_loaded = stored > 0
-
-        if update_stats and stored > 0:
-            trans = self.demo_buffer.sample(min(self.batch_size, self.demo_buffer.get_current_size()*self.T))
-            o = trans["o"]
-            o = self._preprocess_obs(o)
-            # some Normalizer implementations expect numpy arrays for update()
-            try:
-                self.o_stats.update(o)
-                self.o_stats.recompute_stats()
-            except Exception:
-                # best-effort: if normalizer needs other handling, skip update here
-                pass
-
-        return stored
-
-
-    # ------------ store episode ------------
-    def store_episode(self, episode, update_stats=True):
-        self.buffer.store_episode(episode)
-        if update_stats:
-            o = episode["o"][:, :-1, :]
-            o = self._preprocess_obs(o)
-            try:
-                self.o_stats.update(o)
-                self.o_stats.recompute_stats()
-            except Exception:
-                pass
-
-
-    # ------------ sample batch ------------
-    def sample_batch(self):
-        if self.bc_loss and self.demo_loaded and self.demo_buffer.get_current_size() > 0:
-            demo_n = min(self.demo_batch_size, self.batch_size)
-            env_n = self.batch_size - demo_n
-
-            if env_n > 0:
-                env = self.buffer.sample(env_n)
-                demo = self.demo_buffer.sample(demo_n)
-                return {k: np.concatenate([env[k], demo[k]], axis=0) for k in env}
-            else:
-                return self.demo_buffer.sample(self.batch_size)
-
-        return self.buffer.sample(self.batch_size)
-
-
-    # ------------ training step ------------
-    def train(self, n_grad_steps=1):
-        self.main.train()
-
-        for _ in range(n_grad_steps):
-            trans = self.sample_batch()
-
-            o   = self._to_tensor(trans["o"])
-            o2  = self._to_tensor(trans["o_2"])
-            u   = self._to_tensor(trans["u"])
-            r   = self._to_tensor(trans["r"]).reshape(-1,1)
-
-            # flatten if needed
-            if o.ndim == 3:
-                o  = o.reshape(-1, o.shape[-1])
-                o2 = o2.reshape(-1, o2.shape[-1])
-                u  = u.reshape(-1, u.shape[-1])
-                r  = r.reshape(-1, 1)
-
-            # normalize
-            # many Normalizer implementations in this project expect numpy inputs for update/normalize
-            try:
-                o_n  = self._to_tensor(self.o_stats.normalize(o.cpu().numpy()))
-                o2_n = self._to_tensor(self.o_stats.normalize(o2.cpu().numpy()))
-            except Exception:
-                # fallback: if normalizer already returns torch tensors
-                o_n  = self._to_tensor(self.o_stats.normalize(o))
-                o2_n = self._to_tensor(self.o_stats.normalize(o2))
-
-            g_dummy = torch.zeros((o_n.shape[0], max(1,self.dimg)), device=self.device)
-
-            # ----- critic -----
-            with torch.no_grad():
-                a2 = self.target.pi(o2_n, g_dummy)
-                Q2 = self.target.Q(o2_n, g_dummy, a2)
-                y  = r + self.gamma * Q2
-                if not math.isinf(self.clip_return):
-                    y = torch.clamp(y, -self.clip_return, self.clip_return)
-
-            Q_pred = self.main.Q(o_n, g_dummy, u)
-            critic_loss = nn.MSELoss()(Q_pred, y)
-
-            self.Q_optimizer.zero_grad()
-            critic_loss.backward()
-            self.Q_optimizer.step()
-
-            # ----- actor -----
-            self.pi_optimizer.zero_grad()
-
-            a_pi = self.main.pi(o_n, g_dummy)
-            Q_pi = self.main.Q(o_n, g_dummy, a_pi)
-            policy_loss = -torch.mean(Q_pi)
-            policy_loss += self.action_l2 * torch.mean((a_pi/self.max_u)**2)
-
-            # ----- BC / Q-filter -----
-            cloning_loss = torch.tensor(0.0, device=self.device)
-            if self.bc_loss and self.demo_loaded:
-                demo_n = min(self.demo_batch_size, self.batch_size)
-                if demo_n > 0:
-                    o_demo = o_n[-demo_n:]
-                    u_demo = u[-demo_n:]
-
-                    a_demo_pred = self.main.pi(o_demo, g_dummy[:demo_n])
-
-                    if self.q_filter:
-                        Q_demo   = self.main.Q(o_demo, g_dummy[:demo_n], u_demo)
-                        Q_policy = self.main.Q(o_demo, g_dummy[:demo_n], a_demo_pred)
-                        mask = (Q_demo > Q_policy).float()
-                        if mask.sum() > 0:
-                            cloning_loss = ((a_demo_pred - u_demo)**2 * mask).sum() / (mask.sum()+1e-8)
-                    else:
-                        cloning_loss = torch.mean((a_demo_pred - u_demo)**2)
-
-                    policy_loss += self.lambda2 * cloning_loss
-
-            policy_loss.backward()
-            self.pi_optimizer.step()
-
-            # ----- polyak -----
-            self.update_target_net()
-
-            # logs
-            self._last_critic_loss  = critic_loss.item()
-            self._last_actor_loss   = policy_loss.item()
-            self._last_cloning_loss = cloning_loss.item()
-            self.total_steps += 1
-
-        return self._last_critic_loss, self._last_actor_loss
-
-
-    # ------------ target update ------------
-    def update_target_net(self):
-        with torch.no_grad():
-            for p, tp in zip(self.main.parameters(), self.target.parameters()):
-                tp.data.mul_(self.polyak)
-                tp.data.add_((1-self.polyak) * p.data)
-
-
-    # ------------ save/load (robust) ------------
-    def save_policy(self, path):
-        """Safely save the actor, critic, and normalizer stats."""
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-
-        checkpoint = {}
-        try:
-            # networks
-            checkpoint["actor_state_dict"] = self.main.actor.state_dict()
-            checkpoint["critic_state_dict"] = self.main.critic.state_dict()
-            # target optionally
-            try:
-                checkpoint["target_actor_state_dict"] = self.target.actor.state_dict()
-                checkpoint["target_critic_state_dict"] = self.target.critic.state_dict()
-            except Exception:
-                pass
-
-            # normalizers: try to use state_dict if present, otherwise save mean/std arrays if available
-            def _extract_norm_stats(norm):
-                if norm is None:
-                    return None
-                # prefer state_dict
-                if hasattr(norm, "state_dict") and callable(norm.state_dict):
-                    try:
-                        return {"state_dict": norm.state_dict()}
-                    except Exception:
-                        pass
-                # try mean/std attributes (numpy arrays or tensors)
-                if hasattr(norm, "mean") and hasattr(norm, "std"):
-                    try:
-                        mean = getattr(norm, "mean")
-                        std = getattr(norm, "std")
-                        # if tensors, convert to numpy
-                        if hasattr(mean, "detach") or isinstance(mean, torch.Tensor):
-                            mean = mean.detach().cpu().numpy()
-                        if hasattr(std, "detach") or isinstance(std, torch.Tensor):
-                            std = std.detach().cpu().numpy()
-                        return {"mean": np.asarray(mean).tolist(), "std": np.asarray(std).tolist()}
-                    except Exception:
-                        pass
-                # last resort: try to pick useful attributes
-                d = {}
-                for attr in ["_sum", "sum", "local_sum", "local_sumsq", "local_count"]:
-                    if hasattr(norm, attr):
-                        try:
-                            val = getattr(norm, attr)
-                            if isinstance(val, (np.ndarray, list)):
-                                d[attr] = np.asarray(val).tolist()
-                        except Exception:
-                            pass
-                return d or None
-
-            o_stats_data = _extract_norm_stats(self.o_stats)
-            g_stats_data = _extract_norm_stats(self.g_stats)
-            if o_stats_data is not None:
-                checkpoint["o_stats"] = o_stats_data
-            if g_stats_data is not None:
-                checkpoint["g_stats"] = g_stats_data
-
-            # config/meta
-            checkpoint["config"] = {"input_dims": self.input_dims, "max_u": self.max_u}
-
-            torch.save(checkpoint, path)
-        except Exception as e:
-            # safe warning; some callers expect logger.warn; fallback to print
-            try:
-                if hasattr(self, "logger") and hasattr(self.logger, "warn"):
-                    self.logger.warn(f"Saving policy failed inside DDPG.save_policy: {e}")
-                else:
-                    print("Saving policy failed inside DDPG.save_policy:", e)
-            except Exception:
-                print("Saving policy failed (unexpected error while reporting):", e)
-
-
-    def load_policy(self, path, map_location=None):
-        """Safely load actor, critic, and normalizer stats."""
-        ckpt = torch.load(path, map_location=map_location or self.device)
-
-        # networks
-        if "actor_state_dict" in ckpt and "critic_state_dict" in ckpt:
-            try:
-                self.main.actor.load_state_dict(ckpt["actor_state_dict"])
-                self.main.critic.load_state_dict(ckpt["critic_state_dict"])
-            except Exception as e:
-                print("Failed to load actor/critic state_dicts:", e)
-        else:
-            # try older keys
-            for k in ["main", "target", "actor", "critic"]:
-                if k in ckpt and isinstance(ckpt[k], dict):
-                    # heuristic: if provided a raw state_dict for actor or critic
-                    try:
-                        if "actor" in ckpt[k]:
-                            self.main.actor.load_state_dict(ckpt[k]["actor"])
-                        if "critic" in ckpt[k]:
-                            self.main.critic.load_state_dict(ckpt[k]["critic"])
-                    except Exception:
-                        pass
-
-        # normalizers
-        def _load_norm(norm, payload):
-            if norm is None or payload is None:
-                return
-            # If payload contains 'state_dict' and norm exposes load_state_dict
-            if isinstance(payload, dict) and "state_dict" in payload and hasattr(norm, "load_state_dict"):
-                try:
-                    norm.load_state_dict(payload["state_dict"])
-                    return
-                except Exception:
-                    pass
-            # If payload contains mean/std lists
-            if isinstance(payload, dict) and "mean" in payload and "std" in payload:
-                try:
-                    mean = np.asarray(payload["mean"], dtype=np.float32)
-                    std = np.asarray(payload["std"], dtype=np.float32)
-                    # try common attribute names
-                    if hasattr(norm, "mean"):
-                        try:
-                            setattr(norm, "mean", mean)
-                        except Exception:
-                            pass
-                    if hasattr(norm, "std"):
-                        try:
-                            setattr(norm, "std", std)
-                        except Exception:
-                            pass
-                    # some normalizers provide a set_stats/set_state method
-                    for meth in ("set_stats", "set_state", "load_state"):
-                        if hasattr(norm, meth) and callable(getattr(norm, meth)):
-                            try:
-                                getattr(norm, meth)({"mean": mean, "std": std})
-                                break
-                            except Exception:
-                                pass
-                    return
-                except Exception:
-                    pass
-            # fallback: try to set attributes directly for some common names
-            for attr in ["local_sum", "local_sumsq", "local_count", "sum", "sumsq", "count"]:
-                if attr in payload and hasattr(norm, attr):
-                    try:
-                        setattr(norm, attr, np.asarray(payload[attr], dtype=np.float32))
-                    except Exception:
-                        pass
-
-        if "o_stats" in ckpt:
-            _load_norm(self.o_stats, ckpt["o_stats"])
-        if "g_stats" in ckpt:
-            _load_norm(self.g_stats, ckpt["g_stats"])
-
-        # Update target to match main after loading
-        try:
-            self.target = copy.deepcopy(self.main)
-            self.target.eval()
-        except Exception:
-            pass
-
-
-    def logs(self):
-        return [
-            ("train/critic_loss", self._last_critic_loss),
-            ("train/actor_loss",  self._last_actor_loss),
-            ("train/cloning_loss",self._last_cloning_loss),
-            ("buffer/size",       self.buffer.get_current_size()),
-            ("total_steps",       self.total_steps)
-        ]
+from src.algorithms.actor_critic import ActorNetwork, CriticNetwork
+
+
+def dims_to_shapes(input_dims, T):
+    """Convert input dimensions to buffer shapes including time dimension."""
+    shapes = {}
+    for key, val in input_dims.items():
+        if key == 'u':  # Actions have T timesteps
+            shapes[key] = (T, val) if val > 0 else (T,)
+        elif key in ['o', 'g']:  # Observations, goals have T+1 timesteps  
+            shapes[key] = (T+1, val) if val > 0 else (T+1,)
+        else:  # Other keys (like 'info') use original logic
+            shapes[key] = (val,) if val > 0 else ()
     
+    # Add 'ag' (achieved goals) - same shape as observations
+    shapes['ag'] = shapes['o']
+    
+    return shapes
+
+
+global demoBuffer
+
+
+class DDPG(object):
+    @store_args
+    def __init__(self, input_dims, buffer_size, hidden, layers, polyak, batch_size,
+                 Q_lr, pi_lr, norm_eps, norm_clip, max_u, action_l2, clip_obs, scope, T,
+                 rollout_batch_size, subtract_goals, relative_goals, clip_pos_returns,
+                 clip_return, sample_transitions, gamma, bc_loss, q_filter, num_demo,
+                 demo_batch_size, prm_loss_weight, aux_loss_weight, device='cpu', 
+                 network_class=None, **kwargs):
+        """Implementation of DDPG in PyTorch."""
+        
+        self.device = torch.device(device)
+        self.create_actor_critic = True
+        self.dimo = input_dims['o']
+        self.dimg = input_dims['g']  
+        self.dimu = input_dims['u']
+        
+        # Create actor and critic networks
+        self.input_dim = self.dimo + self.dimg
+        self.actor = ActorNetwork(self.input_dim, hidden, layers, self.dimu, max_u).to(self.device)
+        self.critic = CriticNetwork(self.input_dim + self.dimu, hidden, layers).to(self.device)
+        
+        # Target networks
+        self.target_actor = ActorNetwork(self.input_dim, hidden, layers, self.dimu, max_u).to(self.device)
+        self.target_critic = CriticNetwork(self.input_dim + self.dimu, hidden, layers).to(self.device)
+        
+        # Initialize target networks
+        hard_update(self.target_actor.parameters(), self.actor.parameters())
+        hard_update(self.target_critic.parameters(), self.critic.parameters())
+        
+        # Optimizers
+        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=pi_lr)
+        self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=Q_lr)
+        
+        # Normalizers
+        self.o_stats = Normalizer(self.dimo, eps=norm_eps, device=device)
+        self.g_stats = Normalizer(self.dimg, eps=norm_eps, device=device)
+        
+        # Replay buffer
+        buffer_shapes = dims_to_shapes(input_dims, T)
+        self.buffer = ReplayBuffer(buffer_shapes, buffer_size, T, sample_transitions)
+        
+        # Demo buffer for Q-filter
+        self.demo_buffer_size = num_demo
+        self.demo_buffer = None
+        
+        # BC loss and Q-filter parameters (matching TensorFlow implementation)
+        self.lambda1 = 0.001  # Weight for policy loss  
+        self.lambda2 = 0.0078  # Weight for BC loss
+        self.demo_batch_size = 128  # Size of demo batch
+        
+        # BC loss and Q-filter parameters
+        self.lambda1 = 0.001  # Weight for policy loss
+        self.lambda2 = 0.0078  # Weight for BC loss  
+        self.demo_batch_size = 128  # Size of demo batch
+        
+    def _random_action(self, n):
+        return np.random.uniform(low=-self.max_u, high=self.max_u, size=(n, self.dimu))
+
+    def _preprocess_og(self, o, ag, g):
+        """Preprocess observations and goals."""
+        if isinstance(o, torch.Tensor):
+            o = to_numpy(o)
+        if isinstance(ag, torch.Tensor):
+            ag = to_numpy(ag)
+        if isinstance(g, torch.Tensor):
+            g = to_numpy(g)
+            
+        o = np.clip(o, -self.clip_obs, self.clip_obs)
+        g = np.clip(g, -self.clip_obs, self.clip_obs)
+        return o, ag, g
+
+    def get_actions(self, o, ag, g, noise_eps=0., random_eps=0., use_target_net=False,
+                    compute_Q=False):
+        """Get actions from the actor network."""
+        o, ag, g = self._preprocess_og(o, ag, g)
+        
+        # Ensure inputs have batch dimension
+        single_input = len(o.shape) == 1
+        if single_input:
+            o = o.reshape(1, -1)
+            ag = ag.reshape(1, -1)
+            g = g.reshape(1, -1)
+        
+        # Convert to tensors
+        o_tensor = to_tensor(o, self.device)
+        g_tensor = to_tensor(g, self.device)
+        
+        # Normalize
+        o_norm = self.o_stats.normalize(o_tensor)
+        g_norm = self.g_stats.normalize(g_tensor)
+        
+        # Concatenate
+        input_tensor = torch.cat([o_norm, g_norm], dim=-1)
+        
+        # Get actions
+        if use_target_net:
+            actor_net = self.target_actor
+        else:
+            actor_net = self.actor
+            
+        with torch.no_grad():
+            u = actor_net(input_tensor)
+            
+        # Add noise
+        u_numpy = to_numpy(u)
+        
+        # Random actions
+        random_actions = self._random_action(u_numpy.shape[0])
+        
+        # Choose random vs policy actions
+        if random_eps > 0:
+            rand_mask = np.random.rand(u_numpy.shape[0]) < random_eps
+            u_numpy[rand_mask] = random_actions[rand_mask]
+        
+        # Add noise
+        if noise_eps > 0:
+            noise = noise_eps * np.random.randn(*u_numpy.shape)
+            u_numpy += noise
+            
+        # Clip actions
+        u_numpy = np.clip(u_numpy, -self.max_u, self.max_u)
+        
+        # Compute Q values if requested
+        q = None
+        if compute_Q:
+            u_tensor = to_tensor(u_numpy, self.device)
+            critic_input = torch.cat([o_norm, g_norm, u_tensor / self.max_u], dim=-1)
+            
+            if use_target_net:
+                critic_net = self.target_critic
+            else:
+                critic_net = self.critic
+                
+            with torch.no_grad():
+                q = critic_net(critic_input)
+            q = to_numpy(q)
+            
+        # Handle single input case - squeeze batch dimension
+        if single_input:
+            u_numpy = u_numpy.squeeze(0)
+            if q is not None:
+                q = q.squeeze(0)
+            
+        return u_numpy, q
+
+    def initDemoBuffer(self, demoDataFile, update_stats=True):
+        """Initialize demonstration buffer for Q-filter."""
+        global demoBuffer
+        
+        # Load demonstration data
+        demo_data = np.load(demoDataFile, allow_pickle=True)
+            
+        # Process demonstrations
+        obs_data = demo_data['obs']
+        acs_data = demo_data['acs']
+        
+        print(f"Loading {self.num_demo} demonstration episodes...")
+        
+        # Convert to episode format
+        episodes = []
+        num_episodes = min(self.num_demo, len(obs_data))
+        
+        for epsd in range(num_episodes):
+            if epsd % 10 == 0:  # Progress indicator
+                print(f"Loading episode {epsd+1}/{num_episodes}")
+                
+            episode_obs = obs_data[epsd]
+            episode_actions = acs_data[epsd]
+            
+            # Extract observations from dict format
+            obs = []
+            for ep_obs in episode_obs:
+                if isinstance(ep_obs, dict):
+                    obs.append(ep_obs['observation'])
+                else:
+                    obs.append(ep_obs)
+            obs = np.array(obs, dtype=np.float32)
+            
+            # Actions - ensure float32 dtype
+            acs = np.array(episode_actions, dtype=np.float32)
+            
+            # Create episode
+            episode = {}
+            episode['o'] = obs
+            episode['u'] = acs
+            episode['ag'] = obs  # For goal-conditioned compatibility
+            episode['g'] = np.zeros((len(obs), max(1, self.dimg)), dtype=np.float32)  # Dummy goals
+            episode['info'] = np.empty((), dtype=np.float32)  # Empty scalar to match buffer shape
+            episodes.append(episode)
+            
+        # Store demos
+        episode_batch = {k: [] for k in episodes[0].keys()}
+        for episode in episodes:
+            for key in episode_batch.keys():
+                episode_batch[key].append(episode[key])
+                
+        # Convert to batch format
+        for key in episode_batch.keys():
+            episode_batch[key] = np.array(episode_batch[key], dtype=np.float32)
+            
+        # Update statistics if requested
+        if update_stats:
+            for episode in episodes:
+                # Update stats for observations
+                for obs in episode['o']:
+                    self.o_stats.update(obs)
+                for goal in episode['g']:
+                    self.g_stats.update(goal)
+            self.o_stats.recompute_stats()
+            self.g_stats.recompute_stats()
+            
+        # Store in demo buffer
+        demoBuffer = episode_batch
+        self.demo_buffer = episode_batch
+        
+        print(f"Loaded {len(episodes)} demonstration episodes")
+
+    def store_episode(self, episode_batch, update_stats=True):
+        """Store episode in replay buffer."""
+        if update_stats:
+            # Update normalizer statistics
+            for key, values in episode_batch.items():
+                if key == 'o':
+                    self.o_stats.update(values.reshape(-1, values.shape[-1]))
+                elif key == 'g':
+                    self.g_stats.update(values.reshape(-1, values.shape[-1]))
+                    
+            self.o_stats.recompute_stats()
+            self.g_stats.recompute_stats()
+            
+        self.buffer.store_episode(episode_batch)
+
     def get_current_buffer_size(self):
         return self.buffer.get_current_size()
+
+    def sample_batch(self):
+        """Sample batch from replay buffer."""
+        if self.bc_loss and self.demo_buffer is not None:
+            # Sample from both replay buffer and demo buffer  
+            batch_size_rl = self.batch_size - self.demo_batch_size
+            batch_size_demo = self.demo_batch_size
+            
+            # Sample from replay buffer
+            if self.buffer.get_current_size() > 0:
+                transitions_rl = self.buffer.sample(batch_size_rl)
+            else:
+                transitions_rl = None
+                
+            # Sample from demo buffer
+            transitions_demo = self._sample_demo_batch(batch_size_demo)
+            
+            # Combine batches
+            if transitions_rl is not None:
+                transitions = {}
+                for key in transitions_rl.keys():
+                    transitions[key] = np.concatenate([
+                        transitions_rl[key], transitions_demo[key]
+                    ], axis=0)
+            else:
+                transitions = transitions_demo
+                
+            # Create mask: 0 for RL data, 1 for demo data
+            mask = np.concatenate([
+                np.zeros(batch_size_rl if transitions_rl is not None else 0),
+                np.ones(batch_size_demo)
+            ], axis=0)
+            transitions['mask'] = mask
+        else:
+            # Sample only from replay buffer
+            transitions = self.buffer.sample(self.batch_size)
+            # No demo data, so mask is all zeros
+            transitions['mask'] = np.zeros(self.batch_size)
+            
+        return transitions
+
+    def _sample_demo_batch(self, batch_size):
+        """Sample from demonstration buffer."""
+        if self.demo_buffer is None:
+            raise ValueError("Demo buffer not initialized")
+            
+        # Simple random sampling from demo buffer
+        n_episodes = self.demo_buffer['o'].shape[0]
+        T = self.demo_buffer['u'].shape[1]  # Use action time dimension (T, not T+1)
+        
+        episode_idxs = np.random.randint(0, n_episodes, batch_size)
+        t_samples = np.random.randint(T, size=batch_size)  # 0 to T-1
+        
+        transitions = {}
+        for key in self.demo_buffer.keys():
+            if len(self.demo_buffer[key].shape) == 1:  # Handle 1D arrays (like 'info')
+                transitions[key] = self.demo_buffer[key][episode_idxs]
+            elif key in ['o', 'ag', 'g']:  # These have T+1 timesteps
+                transitions[key] = self.demo_buffer[key][episode_idxs, t_samples]
+            elif key == 'u':  # Actions have T timesteps
+                transitions[key] = self.demo_buffer[key][episode_idxs, t_samples]
+            else:
+                transitions[key] = self.demo_buffer[key][episode_idxs, t_samples]
+            
+        # Add next state (t+1)
+        t_next = np.minimum(t_samples + 1, self.demo_buffer['o'].shape[1] - 1)  # Clamp to valid range
+        transitions['o_2'] = self.demo_buffer['o'][episode_idxs, t_next]
+        transitions['ag_2'] = self.demo_buffer['ag'][episode_idxs, t_next]
+        transitions['r'] = np.zeros((batch_size, 1))  # Dummy rewards
+        
+        return transitions
+
+    def train(self, stage=True):
+        """Train the DDPG agent."""
+        if self.buffer.get_current_size() == 0:
+            return
+            
+        # Sample batch
+        batch = self.sample_batch()
+        
+        # Convert to tensors
+        o = to_tensor(batch['o'], self.device)
+        g = to_tensor(batch['g'], self.device) 
+        u = to_tensor(batch['u'], self.device)
+        o_2 = to_tensor(batch['o_2'], self.device)
+        g_2 = to_tensor(batch['g'], self.device)  # Goals don't change
+        r = to_tensor(batch['r'], self.device)
+        mask = to_tensor(batch['mask'], self.device).bool()
+        
+        # Normalize observations
+        o_norm = self.o_stats.normalize(o)
+        g_norm = self.g_stats.normalize(g)
+        o_2_norm = self.o_stats.normalize(o_2)
+        g_2_norm = self.g_stats.normalize(g_2)
+        
+        # Critic loss
+        with torch.no_grad():
+            # Target actions
+            target_input = torch.cat([o_2_norm, g_2_norm], dim=1)
+            u_target = self.target_actor(target_input)
+            
+            # Target Q-values
+            target_critic_input = torch.cat([o_2_norm, g_2_norm, u_target / self.max_u], dim=1)
+            q_target = self.target_critic(target_critic_input)
+            
+            # Bellman target with clipping
+            y = r + self.gamma * q_target
+            if self.clip_return:
+                y = torch.clamp(y, max=0.0)
+            
+        # Current Q-values
+        critic_input = torch.cat([o_norm, g_norm, u / self.max_u], dim=1)
+        q_current = self.critic(critic_input)
+        
+        # Critic loss
+        critic_loss = F.mse_loss(q_current, y)
+        
+        # Update critic
+        self.critic_optimizer.zero_grad()
+        critic_loss.backward()
+        self.critic_optimizer.step()
+        
+        # Actor loss with BC loss and Q-filtering
+        actor_input = torch.cat([o_norm, g_norm], dim=1)
+        u_policy = self.actor(actor_input)
+        actor_critic_input = torch.cat([o_norm, g_norm, u_policy / self.max_u], dim=1)
+        q_policy = self.critic(actor_critic_input)
+        
+        # Compute behavioral cloning loss (matching TensorFlow implementation)
+        cloning_loss = torch.tensor(0.0, device=self.device)
+        
+        if self.bc_loss == 1 and self.q_filter == 1:
+            # Q-filtering: only use demo actions where Q(s,a_demo) > Q(s,a_policy)
+            if mask.any():
+                demo_mask = mask
+                q_demo = q_current[demo_mask]  # Q-values for demo actions
+                q_policy_demo = q_policy[demo_mask]  # Q-values for policy actions on demo states
+                
+                # Q-filter: where demo action is better than policy action
+                q_filter_mask = q_demo.squeeze() > q_policy_demo.squeeze()
+                
+                if q_filter_mask.any():
+                    u_demo_filtered = u[demo_mask][q_filter_mask]
+                    u_policy_filtered = u_policy[demo_mask][q_filter_mask]
+                    cloning_loss = F.mse_loss(u_policy_filtered, u_demo_filtered, reduction='sum')
+                    
+        elif self.bc_loss == 1 and self.q_filter == 0:
+            # Standard behavioral cloning on all demo data  
+            if mask.any():
+                u_demo = u[mask]
+                u_policy_demo = u_policy[mask]
+                cloning_loss = F.mse_loss(u_policy_demo, u_demo, reduction='sum')
+        
+        # Policy loss (matching TensorFlow weights and structure)
+        actor_loss = -self.lambda1 * q_policy.mean()
+        actor_loss += self.lambda1 * self.action_l2 * (u_policy / self.max_u).pow(2).mean()
+        actor_loss += self.lambda2 * cloning_loss
+        
+        # Update actor
+        self.actor_optimizer.zero_grad()
+        actor_loss.backward()
+        self.actor_optimizer.step()
+        
+        # Update target networks
+        polyak_update(self.target_actor.parameters(), self.actor.parameters(), self.polyak)
+        polyak_update(self.target_critic.parameters(), self.critic.parameters(), self.polyak)
+        
+        return critic_loss.item(), actor_loss.item()
+
+    def update_target_net(self):
+        """Update target networks using hard update."""
+        hard_update(self.target_actor.parameters(), self.actor.parameters())
+        hard_update(self.target_critic.parameters(), self.critic.parameters())
+
+    def clear_buffer(self):
+        """Clear the replay buffer."""
+        self.buffer.clear_buffer()
+
+    def save_policy(self, path):
+        """Save the policy."""
+        policy_data = {
+            'actor_state_dict': self.actor.state_dict(),
+            'critic_state_dict': self.critic.state_dict(),
+            'o_stats': {
+                'mean': to_numpy(self.o_stats.mean),
+                'std': to_numpy(self.o_stats.std)
+            },
+            'g_stats': {
+                'mean': to_numpy(self.g_stats.mean), 
+                'std': to_numpy(self.g_stats.std)
+            },
+            'input_dims': {
+                'o': self.dimo,
+                'g': self.dimg,
+                'u': self.dimu
+            },
+            'max_u': self.max_u
+        }
+        
+        torch.save(policy_data, path)
+
+    def load_policy(self, path):
+        """Load a saved policy."""
+        policy_data = torch.load(path, map_location=self.device)
+        
+        self.actor.load_state_dict(policy_data['actor_state_dict'])
+        self.critic.load_state_dict(policy_data['critic_state_dict'])
+        
+        # Load normalizer stats
+        self.o_stats.mean = to_tensor(policy_data['o_stats']['mean'], self.device)
+        self.o_stats.std = to_tensor(policy_data['o_stats']['std'], self.device)
+        self.g_stats.mean = to_tensor(policy_data['g_stats']['mean'], self.device)
+        self.g_stats.std = to_tensor(policy_data['g_stats']['std'], self.device)
+
+    def logs(self):
+        """Return logging information."""
+        logs = {}
+        logs.update(self.actor_optimizer.state_dict())
+        logs.update(self.critic_optimizer.state_dict())
+        return logs

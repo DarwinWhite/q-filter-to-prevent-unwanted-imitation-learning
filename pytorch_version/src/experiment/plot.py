@@ -1,77 +1,60 @@
-#!/usr/bin/env python3
-"""
-Plot training curves from progress.csv files produced by the PyTorch MuJoCo experiments.
-
-Outputs:
- - <env_id>_success_rate.png
- - <env_id>_mean_Q.png
-
-The script searches recursively for progress.csv files, loads params.json
-to determine the environment name, and groups runs accordingly.
-
-Usage:
-    python plot.py results/ --smooth 1
-"""
-
-import os
 import argparse
-import matplotlib.pyplot as plt
-import numpy as np
-import json
+import os
 import glob
+import json
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
 
-# ------------------------------
-# Utility functions
-# ------------------------------
+sns.set()
 
-def smooth_curve(x, y, ratio=0.01):
-    """Smooths a curve using convolution."""
-    if len(y) < 3:
+
+def smooth_curve(x, y, window=100):
+    """Apply smoothing to a curve."""
+    if len(y) < window:
         return x, y
-    halfwidth = int(np.ceil(len(x) * ratio))
-    k = max(1, halfwidth)
-    kernel = np.ones(2 * k + 1)
-    y_smooth = np.convolve(y, kernel, mode='same') / np.convolve(np.ones_like(y), kernel, mode='same')
-    return x, y_smooth
+    
+    # Simple moving average
+    smoothed = []
+    for i in range(len(y)):
+        start = max(0, i - window // 2)
+        end = min(len(y), i + window // 2 + 1)
+        smoothed.append(np.mean(y[start:end]))
+    
+    return x, np.array(smoothed)
 
 
-def load_csv_results(path):
-    """Load progress.csv into dict of numpy arrays."""
-    if not os.path.exists(path):
-        return None
-
-    with open(path, "r") as f:
-        header = f.readline().strip().split(",")
-
+def load_csv_results(csv_path):
+    """Load results from CSV file."""
     try:
-        data = np.genfromtxt(path, delimiter=",", skip_header=1)
-    except Exception:
+        with open(csv_path, 'r') as f:
+            lines = f.readlines()
+        
+        if len(lines) < 2:
+            return None
+            
+        # Parse header
+        header = lines[0].strip().split(',')
+        
+        # Parse data
+        data = {}
+        for line in lines[1:]:
+            if line.strip():
+                values = line.strip().split(',')
+                if len(values) == len(header):
+                    for i, key in enumerate(header):
+                        if key not in data:
+                            data[key] = []
+                        try:
+                            data[key].append(float(values[i]))
+                        except ValueError:
+                            data[key].append(0.0)
+        
+        return data
+    except Exception as e:
+        print(f"Error loading {csv_path}: {e}")
         return None
 
-    if data.ndim == 1:
-        data = data.reshape(1, -1)
-
-    results = {header[i]: data[:, i] for i in range(len(header))}
-    return results
-
-
-def pad_to_same_length(arr_list, value=np.nan):
-    """Pad (N, variable_len) arrays to same length."""
-    maxlen = max(len(a) for a in arr_list)
-
-    padded = []
-    for a in arr_list:
-        if len(a) == maxlen:
-            padded.append(a)
-            continue
-        pad = np.full((maxlen - len(a),), value)
-        padded.append(np.concatenate([a, pad], axis=0))
-    return np.array(padded)
-
-
-# ------------------------------
-# Main plotting logic
-# ------------------------------
 
 def main():
     parser = argparse.ArgumentParser()
@@ -103,6 +86,7 @@ def main():
             print(f"Skipping (missing params.json): {run_dir}")
             continue
 
+        # Load CSV data
         results = load_csv_results(p)
         if results is None:
             print(f"Skipping invalid CSV: {run_dir}")
@@ -135,55 +119,40 @@ def main():
     # ------------------------------
     # Plotting
     # ------------------------------
-
     for env_id, runs in env_data.items():
-        print(f"Generating plots for {env_id} ...")
+        if len(runs) == 0:
+            continue
 
-        epochs_list = [r[0] for r in runs]
-        sr_list = [r[1] for r in runs]
-        q_list = [r[2] for r in runs]
+        print(f"Plotting {env_id} with {len(runs)} run(s)")
 
-        # Pad
-        epochs_pad = pad_to_same_length(epochs_list)
-        sr_pad = pad_to_same_length(sr_list)
-        q_pad = pad_to_same_length(q_list)
+        fig, axes = plt.subplots(1, 2, figsize=(15, 6))
 
-        # Median + IQR
-        sr_med = np.nanmedian(sr_pad, axis=0)
-        sr_p25 = np.nanpercentile(sr_pad, 25, axis=0)
-        sr_p75 = np.nanpercentile(sr_pad, 75, axis=0)
+        # Plot 1: Success rate
+        ax1 = axes[0]
+        for epochs, success_rate, _ in runs:
+            ax1.plot(epochs, success_rate, alpha=0.7)
+        ax1.set_xlabel("Epoch")
+        ax1.set_ylabel("Test Success Rate")
+        ax1.set_title(f"{env_id} - Success Rate")
+        ax1.grid(True)
 
-        q_med = np.nanmedian(q_pad, axis=0)
-        q_p25 = np.nanpercentile(q_pad, 25, axis=0)
-        q_p75 = np.nanpercentile(q_pad, 75, axis=0)
+        # Plot 2: Mean Q
+        ax2 = axes[1]
+        for epochs, _, mean_q in runs:
+            ax2.plot(epochs, mean_q, alpha=0.7)
+        ax2.set_xlabel("Epoch")
+        ax2.set_ylabel("Test Mean Q")
+        ax2.set_title(f"{env_id} - Mean Q-Value")
+        ax2.grid(True)
 
-        # --- Success Rate Plot ---
-        plt.figure(figsize=(8, 5))
-        plt.plot(epochs_pad[0], sr_med, label="Success Rate")
-        plt.fill_between(epochs_pad[0], sr_p25, sr_p75, alpha=0.25)
-        plt.xlabel("Epoch")
-        plt.ylabel("Success Rate")
-        plt.title(f"{env_id} – Success Rate")
-        plt.grid(True)
         plt.tight_layout()
-        out_path = os.path.join(root, f"{env_id}_success_rate.png")
-        plt.savefig(out_path)
-        plt.close()
-        print(f"Saved {out_path}")
-
-        # --- Mean Q Plot ---
-        plt.figure(figsize=(8, 5))
-        plt.plot(epochs_pad[0], q_med, label="Mean Q")
-        plt.fill_between(epochs_pad[0], q_p25, q_p75, alpha=0.25)
-        plt.xlabel("Epoch")
-        plt.ylabel("Mean Q")
-        plt.title(f"{env_id} – Mean Q Value")
-        plt.grid(True)
-        plt.tight_layout()
-        out_path = os.path.join(root, f"{env_id}_mean_Q.png")
-        plt.savefig(out_path)
-        plt.close()
-        print(f"Saved {out_path}")
+        
+        # Save plot
+        plot_filename = f"plot_{env_id.replace('-', '_')}.png"
+        plt.savefig(plot_filename, dpi=150, bbox_inches='tight')
+        print(f"Saved plot: {plot_filename}")
+        
+        plt.show()
 
 
 if __name__ == "__main__":

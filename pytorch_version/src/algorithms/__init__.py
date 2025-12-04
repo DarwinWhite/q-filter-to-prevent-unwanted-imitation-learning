@@ -1,5 +1,6 @@
 """
 Core reinforcement learning algorithms including DDPG, HER, and Q-Filter implementations.
+PyTorch-based implementation for modern ML frameworks.
 """
 
 from .ddpg import *

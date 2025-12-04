@@ -26,21 +26,29 @@ def make_sample_her_transitions(replay_strategy, replay_k, reward_fun):
         # Select which episodes and time steps to use.
         episode_idxs = np.random.randint(0, rollout_batch_size, batch_size)
         t_samples = np.random.randint(T, size=batch_size)
-        transitions = {key: episode_batch[key][episode_idxs, t_samples].copy()
-                       for key in episode_batch.keys()}
+        
+        transitions = {}
+        for key in episode_batch.keys():
+            if len(episode_batch[key].shape) == 1:  # Handle 1D arrays (like 'info')
+                transitions[key] = episode_batch[key][episode_idxs].copy()
+            else:  # Handle arrays with time dimension
+                transitions[key] = episode_batch[key][episode_idxs, t_samples].copy()
 
         # Select future time indexes proportional with probability future_p. These
         # will be used for HER replay by substituting in future goals.
         her_indexes = np.where(np.random.uniform(size=batch_size) < future_p)
-        future_offset = np.random.uniform(size=batch_size) * (T - t_samples)
-        future_offset = future_offset.astype(int)
-        future_t = (t_samples + 1 + future_offset)[her_indexes]
+        
+        # Only do HER substitution if there are actually HER transitions selected
+        if len(her_indexes[0]) > 0:
+            future_offset = np.random.uniform(size=batch_size) * (T - t_samples)
+            future_offset = future_offset.astype(int)
+            future_t = (t_samples + 1 + future_offset)[her_indexes]
 
-        # Replace goal with achieved goal but only for the previously-selected
-        # HER transitions (as defined by her_indexes). For the other transitions,
-        # keep the original goal.
-        future_ag = episode_batch['ag'][episode_idxs[her_indexes], future_t]
-        transitions['g'][her_indexes] = future_ag
+            # Replace goal with achieved goal but only for the previously-selected
+            # HER transitions (as defined by her_indexes). For the other transitions,
+            # keep the original goal.
+            future_ag = episode_batch['ag'][episode_idxs[her_indexes], future_t]
+            transitions['g'][her_indexes] = future_ag
 
         # Reconstruct info dictionary for reward  computation.
         info = {}

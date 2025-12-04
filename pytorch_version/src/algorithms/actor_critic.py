@@ -4,123 +4,140 @@ import torch.nn.functional as F
 from src.utils.util import store_args
 
 
-def mlp(input_dim, hidden_size, num_layers, output_dim, output_activation=None):
-    layers = []
-    last_dim = input_dim
-    for _ in range(num_layers):
-        layers.append(nn.Linear(last_dim, hidden_size))
-        layers.append(nn.ReLU())
-        last_dim = hidden_size
-
-    layers.append(nn.Linear(last_dim, output_dim))
-    if output_activation is not None:
-        layers.append(output_activation)
-
-    return nn.Sequential(*layers)
-
-
-class ActorCritic(nn.Module):
+class ActorCritic:
     @store_args
-    def __init__(
-        self,
-        dimo,
-        dimg,
-        dimu,
-        max_u,
-        o_stats,
-        g_stats,
-        hidden,
-        layers,
-        **kwargs
-    ):
+    def __init__(self, inputs_tf, dimo, dimg, dimu, max_u, o_stats, g_stats, hidden, layers,
+                 device='cpu', **kwargs):
+        """The actor-critic network and related training code.
+
+        Args:
+            inputs_tf (dict of tensors): placeholder dict for interface compatibility
+            dimo (int): the dimension of the observations
+            dimg (int): the dimension of the goals
+            dimu (int): the dimension of the actions
+            max_u (float): the maximum magnitude of actions; action outputs will be scaled
+                accordingly
+            o_stats (Normalizer): normalizer for observations
+            g_stats (Normalizer): normalizer for goals
+            hidden (int): number of hidden units that should be used in hidden layers
+            layers (int): number of hidden layers
+            device (str): PyTorch device ('cpu' or 'cuda')
         """
-        PyTorch implementation of the actor–critic networks.
-        Args are identical to the original TF version.
-        """
-
-        super().__init__()
-
-        input_pi_dim = dimo + dimg
-        input_Q_dim = dimo + dimg + dimu
-
-        # Actor network
-        self.actor = mlp(
-            input_dim=input_pi_dim,
-            hidden_size=hidden,
-            num_layers=layers,
-            output_dim=dimu,
-        )
-
-        # Critic network
-        self.critic = mlp(
-            input_dim=input_Q_dim,
-            hidden_size=hidden,
-            num_layers=layers,
-            output_dim=1,
-        )
-
-        # store scalars/normalizers
-        self._max_u = float(max_u)
-        # keep a float tensor template for scaling; move to correct device at runtime
-        self.max_u_tensor = torch.tensor(self._max_u, dtype=torch.float32)
-        self.o_stats = o_stats
-        self.g_stats = g_stats
-
-    # small helper: ensure `x` is a torch tensor on same device & dtype as `ref`
-    def _ensure_tensor(self, x, ref_tensor):
-        if isinstance(x, torch.Tensor):
-            return x.to(device=ref_tensor.device, dtype=ref_tensor.dtype)
-        else:
-            # numpy array or other -> convert
-            return torch.as_tensor(x, dtype=ref_tensor.dtype, device=ref_tensor.device)
-
-    # ------------------------------------------------------------------
-    # Forward functions
-    # ------------------------------------------------------------------
-
-    def pi(self, o, g):
-        """Compute actions from observation + goal.
-
-        This method is defensive: o/g may be torch tensors or numpy arrays (depending on the normalizer).
-        We coerce normalized outputs to torch tensors before concatenation.
-        """
-        # Normalize (normalizer might return numpy arrays or tensors)
+        self.device = torch.device(device)
+        self.input_dim = dimo + dimg
+        
+        # Create actor and critic networks
+        self.actor = ActorNetwork(self.input_dim, hidden, layers, dimu, max_u).to(self.device)
+        self.critic = CriticNetwork(self.input_dim + dimu, hidden, layers).to(self.device)
+        
+    def get_actions(self, o, g):
+        """Get actions from actor network"""
+        # Normalize inputs
         o_norm = self.o_stats.normalize(o)
         g_norm = self.g_stats.normalize(g)
-
-        # Convert to torch tensors if needed; use `o` as reference for device/dtype
-        o_norm = self._ensure_tensor(o_norm, o)
-        g_norm = self._ensure_tensor(g_norm, o)
-
-        inp = torch.cat([o_norm, g_norm], dim=-1)
-        act = self.actor(inp)
-        act = torch.tanh(act) * self.max_u_tensor.to(inp.device)
-        return act
-
-    def Q(self, o, g, u):
-        """Critic value for provided (o, g, u)."""
-
+        
+        # Concatenate observations and goals
+        input_tensor = torch.cat([o_norm, g_norm], dim=1)
+        
+        with torch.no_grad():
+            actions = self.actor(input_tensor)
+        
+        return actions
+    
+    def get_q_values(self, o, g, u):
+        """Get Q-values from critic network"""
+        # Normalize inputs
         o_norm = self.o_stats.normalize(o)
         g_norm = self.g_stats.normalize(g)
+        
+        # Concatenate observations, goals, and actions
+        input_tensor = torch.cat([o_norm, g_norm, u / self.max_u], dim=1)
+        
+        with torch.no_grad():
+            q_values = self.critic(input_tensor)
+        
+        return q_values
 
-        o_norm = self._ensure_tensor(o_norm, o)
-        g_norm = self._ensure_tensor(g_norm, o)
-        # ensure action tensor
-        u_t = self._ensure_tensor(u, o)
 
-        u_scaled = u_t / self.max_u_tensor.to(o.device)
-        inp = torch.cat([o_norm, g_norm, u_scaled], dim=-1)
-        return self.critic(inp)
+class ActorNetwork(nn.Module):
+    def __init__(self, input_dim, hidden, layers, output_dim, max_u):
+        """Actor network implementation in PyTorch.
+        
+        Args:
+            input_dim (int): Input dimension (observations + goals)
+            hidden (int): Hidden layer size
+            layers (int): Number of hidden layers
+            output_dim (int): Action dimension
+            max_u (float): Maximum action magnitude
+        """
+        super(ActorNetwork, self).__init__()
+        
+        self.max_u = max_u
+        
+        # Build network layers
+        layer_sizes = [input_dim] + [hidden] * layers + [output_dim]
+        self.layers = nn.ModuleList()
+        
+        for i in range(len(layer_sizes) - 1):
+            self.layers.append(nn.Linear(layer_sizes[i], layer_sizes[i + 1]))
+    
+    def forward(self, x):
+        """Forward pass through actor network"""
+        for i, layer in enumerate(self.layers[:-1]):
+            x = F.relu(layer(x))
+        
+        # Final layer with tanh activation, scaled by max_u
+        x = self.max_u * torch.tanh(self.layers[-1](x))
+        
+        return x
 
-    def Q_pi(self, o, g):
-        """Critic value evaluated at actor's actions."""
-        pi_action = self.pi(o, g)
 
-        o_norm = self.o_stats.normalize(o)
-        g_norm = self.g_stats.normalize(g)
+class CriticNetwork(nn.Module):
+    def __init__(self, input_dim, hidden, layers):
+        """Critic network implementation in PyTorch.
+        
+        Args:
+            input_dim (int): Input dimension (observations + goals + actions)
+            hidden (int): Hidden layer size
+            layers (int): Number of hidden layers
+        """
+        super(CriticNetwork, self).__init__()
+        
+        # Build network layers
+        layer_sizes = [input_dim] + [hidden] * layers + [1]
+        self.layers = nn.ModuleList()
+        
+        for i in range(len(layer_sizes) - 1):
+            self.layers.append(nn.Linear(layer_sizes[i], layer_sizes[i + 1]))
+    
+    def forward(self, x):
+        """Forward pass through critic network"""
+        for i, layer in enumerate(self.layers[:-1]):
+            x = F.relu(layer(x))
+        
+        # Final layer (no activation for Q-values)
+        x = self.layers[-1](x)
+        
+        return x
 
-        o_norm = self._ensure_tensor(o_norm, o)
-        g_norm = self._ensure_tensor(g_norm, o)
-        pi_scaled = self._ensure_tensor(pi_action, o) / self.max_u_tensor.to(o.device)
-        inp = torch.cat([o_norm, g_norm, pi_scaled], dim=-1)
-        return self.critic(inp)
+
+def create_actor_critic_networks(input_dims, hidden=256, layers=3, max_u=1.0, device='cpu'):
+    """Helper function to create actor-critic networks with standard configuration.
+    
+    Args:
+        input_dims (dict): Dictionary with 'o', 'g', 'u' dimensions
+        hidden (int): Hidden layer size
+        layers (int): Number of hidden layers
+        max_u (float): Maximum action magnitude
+        device (str): PyTorch device
+        
+    Returns:
+        tuple: (actor, critic) networks
+    """
+    dimo, dimg, dimu = input_dims['o'], input_dims['g'], input_dims['u']
+    input_dim = dimo + dimg
+    
+    actor = ActorNetwork(input_dim, hidden, layers, dimu, max_u).to(device)
+    critic = CriticNetwork(input_dim + dimu, hidden, layers).to(device)
+    
+    return actor, critic
