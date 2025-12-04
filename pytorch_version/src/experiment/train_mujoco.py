@@ -255,8 +255,8 @@ def launch(env, logdir, n_epochs, num_cpu, seed, replay_strategy, policy_save_in
             # Create timestamp-based logdir
             import datetime
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S-%f')[:-3]
-            project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-            logdir = os.path.join(project_root, 'pytorch_version', 'logs', f'{env}-{timestamp}')
+            # Use logs directory in current working directory (standalone version)
+            logdir = os.path.join('logs', f'{env}-{timestamp}')
         
         logger.configure(dir=logdir)
     

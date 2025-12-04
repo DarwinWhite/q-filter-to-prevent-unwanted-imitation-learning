@@ -1,92 +1,113 @@
-# Q-Filter PyTorch Implementation
+# PyTorch Q-Filter Implementation - Standalone Version
 
-This directory contains the PyTorch adaptation of the Q-Filter algorithm for learning from demonstrations in continuous control tasks.
+This directory contains a complete, self-contained implementation of the Q-Filter for preventing unwanted imitation learning in PyTorch.
 
-## Key Features
+## Setup
 
-- **Modern PyTorch Implementation**: Compatible with Python 3.8+ and HPRC environments
-- **Preserved Functionality**: Exact algorithmic behavior as TensorFlow version
-- **MuJoCo Integration**: Full compatibility with continuous control environments
-- **No Legacy Dependencies**: Removed TensorFlow 1.x, MPI, and OpenAI Baselines dependencies
+1. **Create virtual environment:**
+   ```bash
+   python -m venv pytorch_env
+   source pytorch_env/bin/activate  # Linux/Mac
+   # or
+   pytorch_env\Scripts\activate     # Windows
+   ```
 
-## Quick Start
+2. **Install dependencies:**
+   ```bash
+   pip install -r pytorch_requirements.txt
+   ```
 
-### Environment Setup
-```bash
-# Create PyTorch environment
-./setup_pytorch_env.sh
-source pytorch_env/bin/activate
-```
-
-### Train MuJoCo Agent
-```bash
-cd src/experiment
-python train_mujoco.py --env HalfCheetah-v4 --n_epochs 200
-```
-
-### Test PyTorch Integration
-```bash
-python test/test_pytorch_integration.py
-```
-
-## Structure
-
-### `src/algorithms/` - Core RL Algorithms
-- `ddpg.py` - PyTorch DDPG implementation
-- `her.py` - Hindsight Experience Replay  
-- `actor_critic.py` - Neural network architectures
-- `replay_buffer.py` - Experience replay buffer
-- `rollout.py` - Environment rollout utilities
-
-### `src/utils/` - Utilities and Support Modules
-- `normalizer.py` - State/action normalization (no MPI)
-- `util.py` - General utility functions
-- `generate_demos.py` - Demo generation utilities
-
-### `src/experiment/` - Experiment Framework
-- `train_mujoco.py` - MuJoCo training script
-- `config.py` - Configuration system
-- `play.py` - Policy evaluation
-- `plot.py` - Results visualization
-
-### `test/` - Testing and Validation
-- `test_pytorch_integration.py` - Basic functionality tests
-- `test_equivalence.py` - TensorFlow vs PyTorch comparison
-
-## Migration from TensorFlow Version
-
-This implementation preserves:
-- ✅ Exact DDPG algorithm behavior
-- ✅ MuJoCo environment compatibility  
-- ✅ Q-Filter demonstration learning
-- ✅ Command-line interface
-- ✅ Training convergence properties
-
-Key improvements:
-- 🚀 Modern PyTorch architecture
-- 🔧 HPRC compatibility (Python 3.8+)
-- 💾 Simplified dependencies
-- 🧹 Removed legacy MPI/Baselines code
-
-## Dependencies
-
-- Python 3.8+
-- PyTorch 2.1+
-- Gymnasium (modern Gym)
-- MuJoCo 2.3+
-- See `pytorch_requirements.txt` for full list
+   Or use the provided script:
+   ```bash
+   bash setup_pytorch_env.sh
+   ```
 
 ## Usage
 
-Same interface as TensorFlow version:
-
+### Training with Demonstrations + Q-Filter
 ```bash
-# DDPG training
-python train_mujoco.py --env HalfCheetah-v4 --n_epochs 200
-
-# DDPG + Behavior Cloning
-python train_mujoco.py --env HalfCheetah-v4 --bc_loss 1 --demo_file ../../demo_data/halfcheetah_expert_demos.npz
-
-# DDPG + BC + Q-Filter  
-python train_mujoco.py --env HalfCheetah-v4 --bc_loss 1 --q_filter 1 --demo_file ../../demo_data/halfcheetah_expert_demos.npz
+python src/experiment/train_mujoco.py \
+    --env HalfCheetah-v4 \
+    --n_epochs 200 \
+    --demo_file demo_data/halfcheetah_expert_demos.npz \
+    --bc_loss 1 \
+    --q_filter 1 \
+    --num_demo 100
 ```
+
+### Training with Demonstrations (No Q-Filter)
+```bash
+python src/experiment/train_mujoco.py \
+    --env HalfCheetah-v4 \
+    --n_epochs 200 \
+    --demo_file demo_data/halfcheetah_expert_demos.npz \
+    --bc_loss 1 \
+    --q_filter 0 \
+    --num_demo 100
+```
+
+### Vanilla DDPG (No Demonstrations)
+```bash
+python src/experiment/train_mujoco.py \
+    --env HalfCheetah-v4 \
+    --n_epochs 200
+```
+
+### Test Trained Policy
+```bash
+python src/experiment/play.py logs/HalfCheetah-v4-YYYY-MM-DD-HH-MM-SS-mmm/policy_best.pt --render
+```
+
+### Plot Training Results
+```bash
+python src/experiment/plot.py logs/HalfCheetah-v4-YYYY-MM-DD-HH-MM-SS-mmm/
+```
+
+## Directory Structure
+```
+pytorch_version/
+├── README_STANDALONE.md       # This file
+├── pytorch_requirements.txt   # Python dependencies
+├── setup_pytorch_env.sh      # Environment setup script
+├── demo_data/                 # Expert demonstration data
+│   ├── halfcheetah_expert_demos.npz
+│   ├── hopper_expert_demos.npz
+│   └── walker2d_expert_demos.npz
+├── logs/                      # Training logs and saved policies
+│   └── HalfCheetah-v4-YYYY-MM-DD-HH-MM-SS-mmm/
+│       ├── policy_best.pt
+│       ├── policy_latest.pt
+│       ├── params.json
+│       └── progress.csv
+├── src/                       # Source code
+│   ├── algorithms/            # DDPG and related algorithms
+│   ├── experiment/            # Training and evaluation scripts
+│   └── utils/                 # Utility functions
+└── test/                      # Test files (optional)
+```
+
+## Key Features
+
+- **Complete DDPG Implementation**: PyTorch-based DDPG with modern features
+- **Behavioral Cloning Loss**: Learn from expert demonstrations
+- **Q-Filter**: Prevent unwanted imitation by filtering low-Q actions
+- **MuJoCo Integration**: Support for HalfCheetah, Hopper, Walker2D environments
+- **Comprehensive Logging**: TensorBoard-compatible logging and plotting
+- **Flexible Configuration**: Easy parameter tuning via command line
+
+## Expected Performance
+
+| Method | HalfCheetah-v4 Returns |
+|--------|----------------------|
+| Vanilla DDPG | ~0 (struggles to learn) |
+| IL + BC Loss | ~800-1400 |
+| IL + BC Loss + Q-Filter | ~800-1400 (more stable) |
+
+## Dependencies
+
+All required packages are listed in `pytorch_requirements.txt`. Key dependencies include:
+- PyTorch
+- Gymnasium (with MuJoCo)
+- NumPy
+- Click (for CLI)
+- Matplotlib (for plotting)
