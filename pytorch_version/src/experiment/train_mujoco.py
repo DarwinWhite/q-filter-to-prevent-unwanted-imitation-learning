@@ -244,7 +244,7 @@ def train(policy, rollout_worker, evaluator, n_epochs, n_test_rollouts, n_cycles
 
 
 def launch(env, logdir, n_epochs, num_cpu, seed, replay_strategy, policy_save_interval, clip_return, demo_file,
-           bc_loss=None, q_filter=None, num_demo=None, n_cycles=None, n_batches=None, override_params={}, save_policies=True):
+           bc_loss=None, q_filter=None, num_demo=None, n_cycles=None, n_batches=None, override_params={}, save_policies=True, log_name=None):
     """Launch training with MuJoCo environment."""
     
     rank = 0  # Single process
@@ -252,11 +252,15 @@ def launch(env, logdir, n_epochs, num_cpu, seed, replay_strategy, policy_save_in
     # Configure logging
     if rank == 0:
         if logdir is None:
-            # Create timestamp-based logdir
-            import datetime
-            timestamp = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S-%f')[:-3]
-            # Use logs directory in current working directory (standalone version)
-            logdir = os.path.join('logs', f'{env}-{timestamp}')
+            if log_name is not None:
+                # Use custom log name
+                logdir = os.path.join('logs', log_name)
+            else:
+                # Create timestamp-based logdir
+                import datetime
+                timestamp = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S-%f')[:-3]
+                # Use logs directory in current working directory (standalone version)
+                logdir = os.path.join('logs', f'{env}-{timestamp}')
         
         logger.configure(dir=logdir)
     
@@ -355,6 +359,7 @@ def launch(env, logdir, n_epochs, num_cpu, seed, replay_strategy, policy_save_in
 @click.option('--num_demo', type=int, default=100, help='number of expert demo episodes')
 @click.option('--n_cycles', type=int, default=None, help='number of cycles per epoch')
 @click.option('--n_batches', type=int, default=None, help='number of batches per cycle')
+@click.option('--log_name', type=str, default=None, help='custom name for the log directory (if not provided, uses timestamp)')
 def main(**kwargs):
     launch(**kwargs)
 
