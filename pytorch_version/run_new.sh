@@ -1,30 +1,30 @@
 #!/bin/bash
 ## NECCESSARY JOB SPECIFICATIONS
-#SBATCH --job-name=Job13csce642
-#SBATCH --output=cheetah_regular_4_run.%j#=cheetah_top_il_0_run.%j
-#SBATCH --time=48:00:00
+#SBATCH --job-name=Job13csce642thebatch20one
+#SBATCH --output=t3_cheetah_top_q_0_runbatch20.%j #t2_cheetah_regular_4_run.%j#=t2_cheetah_top_il_0_run.%j
+#SBATCH --time=23:55:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=4G
-#SBATCH --partition=gpu        #gpu because there is no cpu partition name
+
 
 ### -------- CONFIGURATION -------- ###
 ENVIRONMENT="HalfCheetah-v4"     # options: HalfCheetah-v4, Hopper-v4, Walker2d-v4
-N_EPOCHS=200
+N_EPOCHS=300
 NUM_CPU=1
-SEED=4
-POLICY_SAVE_INTERVAL=40
+SEED=0
+POLICY_SAVE_INTERVAL=1
 REPLAY_STRATEGY="none"
 CLIP_RETURN=1
 
 # Leave DEMO_FILE *unset* so test -n works properly
-unset DEMO_FILE#unset DEMO_FILE
+DEMO_FILE #unset DEMO_FILE
 DEMO_LEVEL="top"                # top, mid, random
 N_CYCLES=20
-N_BATCHES=20
-BC_LOSS=0
-Q_FILTER=0
+N_BATCHES=20 #test to see if this is how long many steps per train epsiode, it was 20 earlier
+BC_LOSS=1
+Q_FILTER=1
 
 BASE_LOGDIR="result_logs"
 
@@ -61,15 +61,15 @@ mkdir -p "$LOGDIR"
 ### -------- AUTO SELECT DEMO FILE IF NEEDED -------- ###
 if [[ "$BC_LOSS" == 1 || "$Q_FILTER" == 1 ]]; then
     case "$ENVIRONMENT:$DEMO_LEVEL" in
-        "HalfCheetah-v4:top")    DEMO_FILE="demo_data/halfcheetah_medium_high_demos.npz" ;;
+        "HalfCheetah-v4:top")    DEMO_FILE="demo_data/halfcheetah_expert_demos.npz" ;;
         "HalfCheetah-v4:mid")    DEMO_FILE="demo_data/halfcheetah_medium_demos.npz" ;;
-        "HalfCheetah-v4:random") DEMO_FILE="demo_data/halfcheetah_random_demos.npz" ;;
-        "Hopper-v4:top")         DEMO_FILE="demo_data/hopper_medium_high_demos.npz" ;;
+        "HalfCheetah-v4:random") DEMO_FILE="demo_data_old/halfcheetah_random_demos.npz" ;;
+        "Hopper-v4:top")         DEMO_FILE="demo_data/hopper_expert_demos.npz" ;;
         "Hopper-v4:mid")         DEMO_FILE="demo_data/hopper_medium_demos.npz" ;;
-        "Hopper-v4:random")      DEMO_FILE="demo_data/hopper_random_demos.npz" ;;
-        "Walker2d-v4:top")       DEMO_FILE="demo_data/walker2d_medium_demos.npz" ;;
-        "Walker2d-v4:mid")       DEMO_FILE="demo_data/walker2d_medium_low_demos.npz" ;;
-        "Walker2d-v4:random")    DEMO_FILE="demo_data/walker2d_random_demos.npz" ;;
+        "Hopper-v4:random")      DEMO_FILE="demo_data_old/hopper_random_demos.npz" ;;
+        "Walker2d-v4:top")       DEMO_FILE="demo_data/walker2d_expert_demos.npz" ;;
+        "Walker2d-v4:mid")       DEMO_FILE="demo_data/walker2d_medium_demos.npz" ;;
+        "Walker2d-v4:random")    DEMO_FILE="demo_data_old/walker2d_random_demos.npz" ;;
     esac
 fi
 
