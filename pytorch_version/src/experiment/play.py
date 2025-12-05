@@ -58,7 +58,8 @@ def try_load_policy(policy_file, dims, params, env_name):
                 batch_size = obs.shape[0] if len(obs.shape) > 1 else 1
                 actions = np.random.uniform(-1, 1, (batch_size, self.action_dim))
                 Q_values = np.zeros((batch_size, 1)) if compute_Q else None
-                return (actions, Q_values) if compute_Q else actions
+                # Always return tuple for consistency with DDPG policy
+                return (actions, Q_values)
                 
         # Get action dimensions for environment
         env_action_dims = {
