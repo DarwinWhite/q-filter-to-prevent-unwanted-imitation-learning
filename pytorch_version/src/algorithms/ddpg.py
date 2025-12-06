@@ -220,19 +220,13 @@ class DDPG(object):
             episode['u'] = acs
             episode['ag'] = obs  # For goal-conditioned compatibility
             episode['g'] = np.zeros((len(obs), max(1, self.dimg)), dtype=np.float32)  # Dummy goals
+            episode['r'] = np.zeros((len(acs), 1), dtype=np.float32)  # Dummy rewards for each action
             episode['info'] = np.empty((), dtype=np.float32)  # Empty scalar to match buffer shape
             episodes.append(episode)
             
-        # Store demos
-        episode_batch = {k: [] for k in episodes[0].keys()}
-        for episode in episodes:
-            for key in episode_batch.keys():
-                episode_batch[key].append(episode[key])
-                
-        # Convert to batch format
-        for key in episode_batch.keys():
-            episode_batch[key] = np.array(episode_batch[key], dtype=np.float32)
-            
+        # Store episodes individually since they have different lengths
+        self.demo_episodes = episodes
+        
         # Update statistics if requested
         if update_stats:
             for episode in episodes:
@@ -244,9 +238,8 @@ class DDPG(object):
             self.o_stats.recompute_stats()
             self.g_stats.recompute_stats()
             
-        # Store in demo buffer
-        demoBuffer = episode_batch
-        self.demo_buffer = episode_batch
+        # Create demo buffer for sampling - we'll convert episodes to transitions on demand
+        self.demo_buffer = episodes
         
         print(f"Loaded {len(episodes)} demonstration episodes")
 
@@ -313,29 +306,48 @@ class DDPG(object):
         if self.demo_buffer is None:
             raise ValueError("Demo buffer not initialized")
             
-        # Simple random sampling from demo buffer
-        n_episodes = self.demo_buffer['o'].shape[0]
-        T = self.demo_buffer['u'].shape[1]  # Use action time dimension (T, not T+1)
+        transitions = {
+            'o': [],
+            'u': [],
+            'r': [],
+            'o_2': [],
+            'ag': [],
+            'ag_2': [],
+            'g': [],
+            'info': []
+        }
         
-        episode_idxs = np.random.randint(0, n_episodes, batch_size)
-        t_samples = np.random.randint(T, size=batch_size)  # 0 to T-1
-        
-        transitions = {}
-        for key in self.demo_buffer.keys():
-            if len(self.demo_buffer[key].shape) == 1:  # Handle 1D arrays (like 'info')
-                transitions[key] = self.demo_buffer[key][episode_idxs]
-            elif key in ['o', 'ag', 'g']:  # These have T+1 timesteps
-                transitions[key] = self.demo_buffer[key][episode_idxs, t_samples]
-            elif key == 'u':  # Actions have T timesteps
-                transitions[key] = self.demo_buffer[key][episode_idxs, t_samples]
-            else:
-                transitions[key] = self.demo_buffer[key][episode_idxs, t_samples]
+        # Sample random transitions from random episodes
+        for _ in range(batch_size):
+            # Pick random episode
+            episode_idx = np.random.randint(0, len(self.demo_buffer))
+            episode = self.demo_buffer[episode_idx]
             
-        # Add next state (t+1)
-        t_next = np.minimum(t_samples + 1, self.demo_buffer['o'].shape[1] - 1)  # Clamp to valid range
-        transitions['o_2'] = self.demo_buffer['o'][episode_idxs, t_next]
-        transitions['ag_2'] = self.demo_buffer['ag'][episode_idxs, t_next]
-        transitions['r'] = np.zeros((batch_size, 1))  # Dummy rewards
+            # Pick random transition (ensure we have t+1)
+            max_t = len(episode['u']) - 1 if len(episode['u']) > 0 else 0
+            if max_t <= 0:
+                t = 0
+            else:
+                t = np.random.randint(0, max_t)
+            
+            # Extract transition
+            transitions['o'].append(episode['o'][t])
+            transitions['u'].append(episode['u'][t])
+            transitions['r'].append(episode['r'][t])
+            transitions['o_2'].append(episode['o'][t+1])
+            transitions['ag'].append(episode['ag'][t])
+            transitions['ag_2'].append(episode['ag'][t+1]) 
+            transitions['g'].append(episode['g'][t])
+            if hasattr(episode['info'], 'shape'):
+                transitions['info'].append(episode['info'])
+            else:
+                transitions['info'].append(np.array(0.0, dtype=np.float32))
+        
+        # Convert to numpy arrays
+        for key in transitions:
+            transitions[key] = np.array(transitions[key], dtype=np.float32)
+        
+        return transitions
         
         return transitions
 
