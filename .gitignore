@@ -22,7 +22,6 @@ experiment/__*
 /pytorch_version/logs/
 /pytorch_version/test/reports/
 /pytorch_version/visualization_output/
-/pytorch_version/plots/
 
 # Generated demo data (exclude from git)
 /demo_data/
