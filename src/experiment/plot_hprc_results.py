@@ -363,6 +363,83 @@ def plot_final_performance_summary(data, output_dir):
     print("Saved: {}".format(filepath))
 
 
+def plot_environment_all_methods_average(data, env_name, output_dir):
+    """Plot all 7 methods for one environment with the average of 5 seeds and shaded standard deviation."""
+    # Make the figure wider (adjust the width to fit the labels)
+    plt.figure(figsize=(12, 8))  # Increased the width from 12 to 14
+
+    methods_order = ['regular', 'IL_expert', 'IL_medium', 'IL_random', 
+                     'IL_QF_expert', 'IL_QF_medium', 'IL_QF_random']
+    
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', 
+              '#9467bd', '#8c564b', '#e377c2']
+    
+    method_labels = {
+        'regular': 'Vanilla DDPG',
+        'IL_expert': 'IL Expert',
+        'IL_medium': 'IL Medium',
+        'IL_random': 'IL Random',
+        'IL_QF_expert': 'IL+QF Expert',
+        'IL_QF_medium': 'IL+QF Medium',
+        'IL_QF_random': 'IL+QF Random'
+    }
+    
+    # Loop through all methods and plot the average with std dev.
+    for i, method in enumerate(methods_order):
+        returns_all_seeds = []
+        epochs = None
+        
+        # Gather results for all seeds (0 to 4)
+        for seed in range(5):
+            key = (env_name, seed, method)
+            if key in data:
+                if epochs is None:
+                    epochs = data[key]['epoch']
+                returns_all_seeds.append(data[key]['test_mean_return'])
+        
+        if returns_all_seeds:
+            # Convert to numpy array for easier manipulation
+            returns_all_seeds = np.array(returns_all_seeds)
+
+            # Calculate the mean and std deviation across seeds
+            mean_returns = np.mean(returns_all_seeds, axis=0)
+            std_returns = np.std(returns_all_seeds, axis=0)
+
+            # Apply smoothing
+            smoothed_mean_returns = smooth_curve(mean_returns, window=5)
+            smoothed_std_returns = smooth_curve(std_returns, window=5)
+
+            # Plot the mean as the main line
+            plt.plot(epochs, smoothed_mean_returns, 
+                     color=colors[i], linewidth=2, 
+                     label=method_labels[method])
+
+            # Plot the shaded standard deviation region
+            plt.fill_between(epochs, 
+                             smoothed_mean_returns - smoothed_std_returns, 
+                             smoothed_mean_returns + smoothed_std_returns, 
+                             color=colors[i], alpha=0.2)
+
+    # Set the x-axis limits to remove any margins on either side of the data
+    plt.xlim([epochs[0], epochs[-1]+1])
+
+    # Move the legend above the plot and position it horizontally
+    # Reduce font size of the legend to make it fit better
+    plt.legend(bbox_to_anchor=(0.5, 1.1), loc='upper center', ncol=7, fontsize=10)
+
+    plt.xlabel('Epoch', fontsize=14)
+    plt.ylabel('Test Mean Return', fontsize=14)
+    plt.title(f'{env_name.replace("-v4", "")} - All Methods (Average Across Seeds)', fontsize=16, fontweight='bold')
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+
+    # Save the figure
+    filename = f'{env_name.replace("-v4", "")}_all_methods_average.png'
+    filepath = os.path.join(output_dir, filename)
+    plt.savefig(filepath, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"Saved: {filepath}")
+
 def main():
     parser = argparse.ArgumentParser(description='Generate comprehensive plots from HPRC experiment data')
     parser.add_argument("--data_dir", type=str, 
@@ -416,8 +493,16 @@ def main():
     # 1. Plot all 7 methods for each environment (seed 0)
     print("\n=== Generating all-methods plots ===")
     for env in envs:
-        plot_environment_all_methods_one_seed(data, env, 0, output_dir)
+        #generates comparisons for each seed
+        for seed in [0, 1, 2, 3, 4]:
+            plot_environment_all_methods_one_seed(data, env, seed, output_dir)
     
+    # Inside your main function or wherever you're generating the plots:
+    #this is hard coded to do 5 seeds each
+    print("\n=== Generating all-methods average plots ===")
+    for env in envs:
+        plot_environment_all_methods_average(data, env, output_dir)
+
     # 2. Plot IL+QF vs IL comparisons (same seed comparisons)
     print("\n=== Generating IL+QF vs IL comparison plots ===")
     for env in envs:
