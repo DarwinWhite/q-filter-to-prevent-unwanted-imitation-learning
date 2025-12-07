@@ -28,14 +28,6 @@ pytorch_env\Scripts\activate     # Windows
 
 ### 3. Install Dependencies
 
-Use the provided setup script for automatic installation:
-
-```bash
-bash setup_pytorch_env.sh
-```
-
-Or install manually:
-
 ```bash
 pip install --upgrade pip
 pip install -r pytorch_requirements.txt
