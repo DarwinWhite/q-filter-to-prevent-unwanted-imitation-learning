@@ -18,13 +18,11 @@ experiment/__*
 /env
 /pytorch_env
 
-# PyTorch version logs and outputs
-/pytorch_version/logs/
-/pytorch_version/test/reports/
-/pytorch_version/visualization_output/
-
-# Generated demo data (exclude from git)
-/demo_data/
+# Logs and outputs
+/logs/
+/logs_pytorch/
+/test/reports/
+/visualization_output/
 
 *.sublime-project
 *.sublime-workspace
