@@ -18,26 +18,26 @@ def test_pytorch_imports():
     
     try:
         import torch
-        print(f"   ✅ PyTorch: {torch.__version__}")
+        print(f"   [OK] PyTorch: {torch.__version__}")
         
         import gymnasium as gym
-        print(f"   ✅ Gymnasium: {gym.__version__}")
+        print(f"   [OK] Gymnasium: {gym.__version__}")
         
         import src.algorithms.ddpg
-        print("   ✅ PyTorch DDPG")
+        print("   [OK] PyTorch DDPG")
         
         import src.algorithms.actor_critic
-        print("   ✅ PyTorch Actor-Critic")
+        print("   [OK] PyTorch Actor-Critic")
         
         import src.utils.normalizer
-        print("   ✅ PyTorch Normalizer")
+        print("   [OK] PyTorch Normalizer")
         
         import src.experiment.mujoco_config
-        print("   ✅ MuJoCo Config")
+        print("   [OK] MuJoCo Config")
         
         return True
     except Exception as e:
-        print(f"   ❌ Import error: {e}")
+        print(f"   [FAIL] Import error: {e}")
         return False
 
 
@@ -58,9 +58,9 @@ def test_environment_compatibility():
         if isinstance(obs, tuple):
             obs = obs[0]  # New Gymnasium API
         
-        print(f"   ✅ Environment: {env_name}")
-        print(f"   ✅ Observation shape: {obs.shape}")
-        print(f"   ✅ Action shape: {env.action_space.shape}")
+        print(f"   [OK] Environment: {env_name}")
+        print(f"   [OK] Observation shape: {obs.shape}")
+        print(f"   [OK] Action shape: {env.action_space.shape}")
         
         # Test step
         action = env.action_space.sample()
@@ -72,14 +72,14 @@ def test_environment_compatibility():
             obs_new, reward, terminated, truncated, info = step_result
             done = terminated or truncated
         
-        print(f"   ✅ Step function works")
-        print(f"   ✅ Reward type: {type(reward)}")
+        print(f"   [OK] Step function works")
+        print(f"   [OK] Reward type: {type(reward)}")
         
         env.close()
         return True
         
     except Exception as e:
-        print(f"   ❌ Environment error: {e}")
+        print(f"   [FAIL] Environment error: {e}")
         return False
 
 
@@ -104,9 +104,9 @@ def test_neural_networks():
         dummy_input = torch.randn(batch_size, input_dim)
         actions = actor(dummy_input)
         
-        print(f"   ✅ Actor network created")
-        print(f"   ✅ Actor output shape: {actions.shape}")
-        print(f"   ✅ Action range: [{actions.min().item():.2f}, {actions.max().item():.2f}]")
+        print(f"   [OK] Actor network created")
+        print(f"   [OK] Actor output shape: {actions.shape}")
+        print(f"   [OK] Action range: [{actions.min().item():.2f}, {actions.max().item():.2f}]")
         
         # Test critic network
         critic_input_dim = input_dim + output_dim
@@ -115,13 +115,13 @@ def test_neural_networks():
         dummy_critic_input = torch.randn(batch_size, critic_input_dim)
         q_values = critic(dummy_critic_input)
         
-        print(f"   ✅ Critic network created")
-        print(f"   ✅ Critic output shape: {q_values.shape}")
+        print(f"   [OK] Critic network created")
+        print(f"   [OK] Critic output shape: {q_values.shape}")
         
         return True
         
     except Exception as e:
-        print(f"   ❌ Network error: {e}")
+        print(f"   [FAIL] Network error: {e}")
         return False
 
 
@@ -153,22 +153,22 @@ def test_ddpg_creation():
         ddpg_config = configure_mujoco_ddpg(dims, params)
         policy = DDPGMuJoCo(input_dims=dims, **ddpg_config)
         
-        print(f"   ✅ DDPG created")
-        print(f"   ✅ Input dimensions: {dims}")
+        print(f"   [OK] DDPG created")
+        print(f"   [OK] Input dimensions: {dims}")
         
         # Test action generation
         batch_size = 5
         obs = np.random.randn(batch_size, dims['o'])
         actions, q_vals = policy.get_actions(obs, compute_Q=True)
         
-        print(f"   ✅ Action generation works")
-        print(f"   ✅ Action shape: {actions.shape}")
-        print(f"   ✅ Q-value shape: {q_vals.shape}")
+        print(f"   [OK] Action generation works")
+        print(f"   [OK] Action shape: {actions.shape}")
+        print(f"   [OK] Q-value shape: {q_vals.shape}")
         
         return True
         
     except Exception as e:
-        print(f"   ❌ DDPG error: {e}")
+        print(f"   [FAIL] DDPG error: {e}")
         return False
 
 
@@ -208,19 +208,19 @@ def test_rollout_worker():
             render=False
         )
         
-        print(f"   ✅ Rollout worker created")
+        print(f"   [OK] Rollout worker created")
         
         # Test rollout generation
         episode = rollout_worker.generate_rollouts()
         
-        print(f"   ✅ Episode generated")
-        print(f"   ✅ Episode keys: {list(episode.keys())}")
-        print(f"   ✅ Episode shape: {episode['o'].shape}")
+        print(f"   [OK] Episode generated")
+        print(f"   [OK] Episode keys: {list(episode.keys())}")
+        print(f"   [OK] Episode shape: {episode['o'].shape}")
         
         return True
         
     except Exception as e:
-        print(f"   ❌ Rollout error: {e}")
+        print(f"   [FAIL] Rollout error: {e}")
         return False
 
 
@@ -258,18 +258,18 @@ def test_training_step():
         # Store episode
         policy.store_episode(episode)
         
-        print(f"   ✅ Episode stored")
-        print(f"   ✅ Buffer size: {policy.get_current_buffer_size()}")
+        print(f"   [OK] Episode stored")
+        print(f"   [OK] Buffer size: {policy.get_current_buffer_size()}")
         
         # Try training step (should work even with minimal data)
         if policy.get_current_buffer_size() > 0:
             policy.train()
-            print(f"   ✅ Training step completed")
+            print(f"   [OK] Training step completed")
         
         return True
         
     except Exception as e:
-        print(f"   ❌ Training error: {e}")
+        print(f"   [FAIL] Training error: {e}")
         return False
 
 
@@ -296,11 +296,11 @@ def test_save_load():
         # Test save
         with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as f:
             policy.save_policy(f.name)
-            print(f"   ✅ Policy saved to {f.name}")
+            print(f"   [OK] Policy saved to {f.name}")
             
             # Test load
             policy.load_policy(f.name)
-            print(f"   ✅ Policy loaded successfully")
+            print(f"   [OK] Policy loaded successfully")
             
             # Clean up
             os.unlink(f.name)
@@ -308,7 +308,7 @@ def test_save_load():
         return True
         
     except Exception as e:
-        print(f"   ❌ Save/load error: {e}")
+        print(f"   [FAIL] Save/load error: {e}")
         return False
 
 
@@ -335,7 +335,7 @@ if __name__ == "__main__":
             if test_func():
                 passed += 1
         except Exception as e:
-            print(f"   ❌ Test failed with exception: {e}")
+            print(f"   [FAIL] Test failed with exception: {e}")
     
     print("\n" + "=" * 60)
     print(f"PyTorch Integration Test Results: {passed}/{total} PASSED")
@@ -346,6 +346,6 @@ if __name__ == "__main__":
         print("1. Test with: python pytorch_version/src/experiment/train_mujoco.py --env HalfCheetah-v4 --n_epochs 10")
         print("2. Compare with TensorFlow version results")
     else:
-        print("⚠️  Some tests failed. Please check the errors above.")
+        print("WARNING:  Some tests failed. Please check the errors above.")
     
     print("=" * 60)

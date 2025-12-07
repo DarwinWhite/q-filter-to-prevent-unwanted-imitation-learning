@@ -32,7 +32,7 @@ def compare_network_outputs():
         goal_input = np.zeros((batch_size, goal_dim))  # Dummy goals
         action_input = np.random.randn(batch_size, action_dim)
         
-        print(f"   ✅ Test inputs created: obs{obs_input.shape}, goal{goal_input.shape}, action{action_input.shape}")
+        print(f"   [OK] Test inputs created: obs{obs_input.shape}, goal{goal_input.shape}, action{action_input.shape}")
         
         # PyTorch networks
         import torch
@@ -56,13 +56,13 @@ def compare_network_outputs():
             critic_input = torch.cat([input_tensor, torch.tensor(action_input, dtype=torch.float32)], dim=1)
             q_values_pt = critic_pt(critic_input).numpy()
         
-        print(f"   ✅ PyTorch networks: action range [{actions_pt.min():.3f}, {actions_pt.max():.3f}]")
-        print(f"   ✅ PyTorch networks: Q range [{q_values_pt.min():.3f}, {q_values_pt.max():.3f}]")
+        print(f"   [OK] PyTorch networks: action range [{actions_pt.min():.3f}, {actions_pt.max():.3f}]")
+        print(f"   [OK] PyTorch networks: Q range [{q_values_pt.min():.3f}, {q_values_pt.max():.3f}]")
         
         return True
         
     except Exception as e:
-        print(f"   ❌ Network comparison error: {e}")
+        print(f"   [FAIL] Network comparison error: {e}")
         return False
 
 
@@ -104,19 +104,19 @@ def compare_environment_interactions():
         action_diff = np.abs(action1 - action2).max()
         reward_diff = abs(step1[1] - step2[1])
         
-        print(f"   ✅ Observation difference: {obs_diff:.6f}")
-        print(f"   ✅ Action difference: {action_diff:.6f}")  
-        print(f"   ✅ Reward difference: {reward_diff:.6f}")
+        print(f"   [OK] Observation difference: {obs_diff:.6f}")
+        print(f"   [OK] Action difference: {action_diff:.6f}")  
+        print(f"   [OK] Reward difference: {reward_diff:.6f}")
         
         if obs_diff < 1e-10 and action_diff < 1e-10:
-            print(f"   ✅ Environment behavior is deterministic")
+            print(f"   [OK] Environment behavior is deterministic")
         
         env1.close()
         env2.close()
         return True
         
     except Exception as e:
-        print(f"   ❌ Environment comparison error: {e}")
+        print(f"   [FAIL] Environment comparison error: {e}")
         return False
 
 
@@ -136,12 +136,12 @@ def compare_algorithm_parameters():
                 print(f"     {key}: {pt_params[key]}")
         
         # Note: Would need TensorFlow environment to compare directly
-        print("   ✅ Parameter structure matches expected format")
+        print("   [OK] Parameter structure matches expected format")
         
         return True
         
     except Exception as e:
-        print(f"   ❌ Parameter comparison error: {e}")
+        print(f"   [FAIL] Parameter comparison error: {e}")
         return False
 
 
@@ -187,17 +187,17 @@ def test_reproducibility():
         
         # Compare
         action_diff = np.abs(actions1 - actions2).max()
-        print(f"   ✅ Action difference (same seed): {action_diff:.10f}")
+        print(f"   [OK] Action difference (same seed): {action_diff:.10f}")
         
         if action_diff < 1e-6:
-            print(f"   ✅ PyTorch version is reproducible")
+            print(f"   [OK] PyTorch version is reproducible")
         else:
-            print(f"   ⚠️  Some variability detected (might be due to random exploration)")
+            print(f"   WARNING:  Some variability detected (might be due to random exploration)")
         
         return True
         
     except Exception as e:
-        print(f"   ❌ Reproducibility error: {e}")
+        print(f"   [FAIL] Reproducibility error: {e}")
         return False
 
 
@@ -230,14 +230,14 @@ def generate_comparison_report():
         with open('pytorch_version/test/reports/equivalence_report.json', 'w') as f:
             json.dump(report, f, indent=2)
         
-        print(f"   ✅ Comparison report saved")
-        print(f"   ✅ PyTorch: {report['pytorch_version']}")
-        print(f"   ✅ System: {report['system']} Python {report['python_version']}")
+        print(f"   [OK] Comparison report saved")
+        print(f"   [OK] PyTorch: {report['pytorch_version']}")
+        print(f"   [OK] System: {report['system']} Python {report['python_version']}")
         
         return True
         
     except Exception as e:
-        print(f"   ❌ Report generation error: {e}")
+        print(f"   [FAIL] Report generation error: {e}")
         return False
 
 
@@ -262,7 +262,7 @@ if __name__ == "__main__":
             if test_func():
                 passed += 1
         except Exception as e:
-            print(f"   ❌ Test failed with exception: {e}")
+            print(f"   [FAIL] Test failed with exception: {e}")
     
     print("\n" + "=" * 60)
     print(f"Equivalence Test Results: {passed}/{total} PASSED")
@@ -272,7 +272,7 @@ if __name__ == "__main__":
         print("\nThe PyTorch implementation appears to preserve the core functionality.")
         print("For full validation, run both versions and compare training curves.")
     else:
-        print("⚠️  Some equivalence tests failed.")
+        print("WARNING:  Some equivalence tests failed.")
         
     print("\nRecommended validation steps:")
     print("1. Train both TF and PyTorch versions on HalfCheetah-v4")

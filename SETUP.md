@@ -49,7 +49,7 @@ Run the test script to ensure everything is installed correctly:
 python test_installation.py
 ```
 
-All tests should pass with ✅ indicators.
+All tests should pass.
 
 ## Directory Structure
 
@@ -197,7 +197,7 @@ sudo apt-get update
 sudo apt-get install -y libgl1-mesa-glx libosmesa6 patchelf
 
 # Verify MuJoCo installation
-python -c "import gymnasium as gym; env = gym.make('HalfCheetah-v4'); print('✅ MuJoCo works!')"
+python -c "import gymnasium as gym; env = gym.make('HalfCheetah-v4'); print('MuJoCo works!')"
 ```
 
 ### Import Errors

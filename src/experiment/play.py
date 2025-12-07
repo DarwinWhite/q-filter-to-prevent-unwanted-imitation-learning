@@ -117,13 +117,13 @@ def try_load_policy(policy_file, dims, params, env_name):
                 policy.ddpg.g_stats.mean = torch.tensor(policy_data['g_stats']['mean'])
                 policy.ddpg.g_stats.std = torch.tensor(policy_data['g_stats']['std'])
                 
-            print("✅ Successfully loaded PyTorch policy")
+            print("Successfully loaded PyTorch policy")
             return policy
         else:
             raise ValueError("Invalid policy format")
             
     except Exception as e:
-        print(f"❌ Failed to load policy: {e}")
+        print(f"Failed to load policy: {e}")
         print("   Using random policy for demonstration.")
         
         # Create random policy
@@ -222,7 +222,7 @@ def main(policy_file, seed, n_test_rollouts, render, record_gif, output_dir):
     else:
         env_name = 'HalfCheetah-v4'  # Default
     
-    print(f"🎯 Environment: {env_name}")
+    print(f"Environment: {env_name}")
     
     # Setup parameters
     params = config.prepare_mujoco_params(env_name)
@@ -261,7 +261,7 @@ def main(policy_file, seed, n_test_rollouts, render, record_gif, output_dir):
         
         if record_gif:
             # Record episode as GIF (placeholder - would need environment rendering)
-            print(f"📹 Episode {ep + 1} recorded (GIF recording not implemented)")
+            print(f"Episode {ep + 1} recorded (GIF recording not implemented)")
 
     # Cleanup environments to prevent cleanup errors
     try:
@@ -271,7 +271,7 @@ def main(policy_file, seed, n_test_rollouts, render, record_gif, output_dir):
         pass  # Ignore cleanup errors
 
     # Summary statistics
-    print(f"\n📊 Results after {n_test_rollouts} episodes:")
+    print(f"\nResults after {n_test_rollouts} episodes:")
     print(f"   Mean Return: {np.mean(returns):.2f} ± {np.std(returns):.2f}")
     print(f"   Min Return: {np.min(returns):.2f}")
     print(f"   Max Return: {np.max(returns):.2f}")
