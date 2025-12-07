@@ -130,6 +130,16 @@ python src/experiment/train_mujoco.py \
 python src/experiment/play.py logs/HalfCheetah-v4-*/policy_best.pt --render
 ```
 
+### Replay Expert Demonstrations
+
+```bash
+# Replay expert demonstrations (no rendering)
+python src/experiment/play.py demo_data/halfcheetah_expert_demos.npz --n_test_rollouts 5
+
+# Replay with rendering (visualize the expert)
+python src/experiment/play.py demo_data/halfcheetah_expert_demos.npz --n_test_rollouts 3 --render
+```
+
 ### Generate Plots
 
 ```bash
